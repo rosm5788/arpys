@@ -322,7 +322,7 @@ class Arpes:
         mat = bin_ndarray(dat_mat, new_shape, operation=operation)
         return xr.DataArray(mat, coords=new_coords, dims=dat.dims, attrs=dat.attrs)
 
-    def plot(self):
-        self.it = ImageTool(self._obj)
+    def plot(self, layout=ImageTool.LayoutComplete):
+        self.it = ImageTool(self._obj, layout=layout)
         self.it.show()
         return self.it
