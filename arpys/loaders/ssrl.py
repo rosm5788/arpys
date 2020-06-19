@@ -2,6 +2,8 @@ import numpy as np
 import xarray as xr
 import h5py
 import matplotlib.pyplot as plt
+from .utility import find_basis
+
 
 def load_ssrl_52(filename):
     conv = {'X': 'x', 'Z': 'z', 'ThetaX': 'slit', 'ThetaY': 'perp', 'Theta Y': 'perp', 'Kinetic Energy': 'energy'}
