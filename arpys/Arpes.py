@@ -100,6 +100,42 @@ class Arpes:
             {'kx': (('energy', 'slit'), kx), 'binding': (('energy', 'slit'), KE - self.ef)})
         return self._obj
 
+    # Kz maps should always be in binding energy, will need to shift off using a fixed work-function to recover
+    # kinetic energy for k conversion
+    def map_isoenergy_kz_k_irreg(self, be=0, workfunc=4.2, binwidth=0.1, phi0=0, inner_potential=15):
+        iso_e = self._obj.arpes.sel_kinetic(be-binwidth, be+binwidth).sum('energy')
+        T, F = np.meshgrid(iso_e.arpes.photon_energy, iso_e.arpes.slit, indexing='ij')
+        kx = 0.512 * np.sqrt(be + T - workfunc) * np.sin(np.pi / 180 * (F - phi0))
+        kz = 0.512 * np.sqrt((be + T - workfunc)*np.cos(np.pi/180 * (F-phi0))**2 + inner_potential)
+
+        iso_e = iso_e.assign_coords({'kx':(('photon_energy','slit'), kx), 'kz':(('photon_energy', 'slit'), kz)})
+        return iso_e
+
+    # Currently can only take spectra at gamma point (in angle space) before k-converting
+    def spectra_kz_k_irreg(self, binwidth=1, workfunc=4.2, phi0=0, inner_potential=15):
+        cut = self._obj.arpes.sel_slit(phi0-binwidth, phi0+binwidth).sum('slit')
+        F, BE = np.meshgrid(self._obj.arpes.photon_energy, self._obj.arpes.energy, indexing='ij')
+        kz = 0.512 * np.sqrt((F + BE - workfunc) + inner_potential)
+
+        cut = cut.assign_coords({'kz': (('photon_energy', 'energy'), kz)})
+        return cut
+
+    @requires_ef
+    def cut_from_map_slit_k_irreg(self, theta0=0, phi0=0):
+        cut = self._obj.sel({'perp':theta0}, method='nearest')
+        KE, F = np.meshgrid(cut.arpes.energy, cut.arpes.slit, indexing='ij')
+        kx = 0.512 * np.sqrt(KE) * np.sin(np.pi / 180 * (F - phi0))
+        cut = cut.assign_coords({'kx': (('energy','slit'), kx), 'binding': (('energy','slit'), KE - self.ef)})
+        return cut
+
+    @requires_ef
+    def cut_from_map_perp_k_irreg(self, theta0=0, phi0=0):
+        cut = self._obj.sel({'slit': phi0}, method='nearest')
+        KE, F = np.meshgrid(cut.arpes.energy, cut.arpes.perp, indexing='ij')
+        kx = 0.512 * np.sqrt(KE) * np.sin(np.pi / 180 * (F - theta0))
+        cut = cut.assign_coords({'kx': (('energy', 'perp'), kx), 'binding': (('energy', 'perp'), KE - self.ef)})
+        return cut
+
     def normalize(self):
         self._obj.values = (self._obj.values - np.min(self._obj.values)) / (
                     np.max(self._obj.values) - np.min(self._obj.values))
@@ -176,6 +212,10 @@ class Arpes:
     @property
     def perp(self):
         return self._obj.coords['perp'].values
+
+    @property
+    def photon_energy(self):
+        return self._obj.coords['photon_energy'].values
 
     @requires_ef
     def sel_binding(self, *args):

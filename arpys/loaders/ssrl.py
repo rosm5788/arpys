@@ -4,8 +4,8 @@ import h5py
 import matplotlib.pyplot as plt
 from .utility import find_basis
 
-
-def load_ssrl_52(filename):
+# Prior to 10/2020
+def load_ssrl_52_old(filename):
     conv = {'X': 'x', 'Z': 'z', 'ThetaX': 'slit', 'ThetaY': 'perp', 'Theta Y': 'perp', 'Kinetic Energy': 'energy'}
     f = h5py.File(filename, 'r')
     counts = np.array(f['data']['counts'])
@@ -37,6 +37,45 @@ def load_ssrl_52(filename):
     attrs = dict(f['beamline'].attrs).copy()
     attrs.update(dict(f['endstation'].attrs))
     attrs.update(dict(f['analyzer'].attrs))
+    f.close()
+    return xr.DataArray(vals, dims=axis_labels, coords=coords, attrs=attrs)
+
+#After 10/2020
+def load_ssrl_52(filename):
+    conv = {'X': 'x', 'Z': 'z', 'ThetaX': 'slit', 'ThetaY': 'perp', 'Theta Y': 'perp', 'Kinetic Energy': 'energy'}
+    f = h5py.File(filename, 'r')
+    counts = np.array(f['Data']['Count'])
+    if counts.ndim == 4:
+        # for some reason, transpose the last two axes?
+        counts = np.transpose(counts, axes=[0, 1, 3, 2])
+    delta = []
+    offset = []
+    axis_labels = []
+    for i in range(len(counts.shape)):
+        axis_key = 'Axes' + str(i)
+        try:
+            axis_label = conv[f['Data'][axis_key].attrs['Label']]
+            axis_labels.append(axis_label)
+        except KeyError as e:
+            print('Could not understand [{0}] as an arpys axis!'.format(f['data'][axis_key].attrs['label']))
+            return None
+        delta.append(f['Data'][axis_key].attrs['Delta'])
+        offset.append(f['Data'][axis_key].attrs['Offset'])
+    vals = np.copy(counts)
+    if 'Time' in f['Data']:
+        exposure = np.array(f['Data']['Time'])
+        select = exposure > 0
+        vals[select] = counts[select] / exposure[select]
+        vals[~select] = 0
+    coords = {}
+    for delt, offs, label, size in zip(delta, offset, axis_labels, counts.shape):
+        coords[label] = np.arange(size) * delt + offs
+    attrs = dict(f['Beamline'].attrs).copy()
+    attrs.update(dict(f['Manipulator'].attrs))
+    attrs.update(dict(f['Measurement'].attrs))
+    attrs.update(dict(f['Temperature'].attrs))
+    attrs.update(dict(f['UserSettings'].attrs))
+    attrs.update(dict(f['UserSettings']['AnalyserSlit'].attrs))
     f.close()
     return xr.DataArray(vals, dims=axis_labels, coords=coords, attrs=attrs)
 
@@ -124,3 +163,63 @@ def load_ssrl_52_raster_list(filenames, x_min=None, dx=None, Nx=None, z_min=None
     dims = ('energy', 'slit', 'x', 'z')
     coords = {'energy': energy, 'slit': slit, 'x': x_coord, 'z': z_coord}
     return xr.DataArray(counts, dims=dims, coords=coords, attrs=attrs)
+
+
+def load_ssrl_52_photonEscan(filename):
+    conv = {'X': 'x', 'Z': 'z', 'ThetaX': 'slit', 'ThetaY': 'perp', 'Theta Y': 'perp', 'Kinetic Energy': 'energy'}
+    f = h5py.File(filename, 'r')
+    # 3d dataset, kinetic energy, angle, photon energy
+    counts = np.array(f['Data']['Count'])
+    I0 = np.abs(np.array(f['MapInfo']['Beamline:I0']))
+
+    xaxis_offsets = np.array(f['MapInfo']['Measurement:XAxis:Offset'])
+    xaxis_maxs = np.array(f['MapInfo']['Measurement:XAxis:Maximum'])
+    xaxis_size = counts.shape[0]
+
+    yaxis_offsets = np.array(f['MapInfo']['Measurement:YAxis:Offset'])
+    yaxis_deltas = np.array(f['MapInfo']['Measurement:YAxis:Delta'])
+    yaxis_size = counts.shape[1]
+
+    zaxis_offset = f['Data']['Axes2'].attrs['Offset']
+    zaxis_delta = f['Data']['Axes2'].attrs['Delta']
+    zaxis_size = counts.shape[2]
+    zaxis_max = zaxis_size*zaxis_delta + zaxis_offset
+    zaxis_coord = np.linspace(zaxis_offset, zaxis_max, num=zaxis_size)
+
+    photon_energy_scan_dataarrays = []
+
+    #Slice by slice along z (photon energy)
+    for photon_energy_slice in np.arange(zaxis_size):
+        ekslice = counts[:, :, photon_energy_slice] / I0[photon_energy_slice]
+        kinetic_coords = np.linspace(xaxis_offsets[photon_energy_slice],xaxis_maxs[photon_energy_slice], num=xaxis_size)
+        angle_coords = np.arange(yaxis_size)*yaxis_deltas[photon_energy_slice] + yaxis_offsets[photon_energy_slice]
+        dims = ('energy', 'slit')
+        coords = {'energy':kinetic_coords, 'slit':angle_coords}
+        ekslice_dataarray = xr.DataArray(ekslice, dims=dims, coords=coords)
+
+        #Cut down on window to find ef with initial guess, will always need tuning if mono drifts too much...
+        photon_energy = zaxis_coord[photon_energy_slice]
+        workfunc = 4.365
+        efguess = photon_energy - workfunc
+        maxkinetic = np.nanmax(kinetic_coords)
+        effinder = ekslice_dataarray.sel({'energy': slice(efguess-1.0, maxkinetic)})
+        ef = effinder.arpes.guess_ef()
+        binding_coords = kinetic_coords - ef
+
+        newcoords = {'energy': binding_coords, 'slit': angle_coords}
+        ekslice_binding = xr.DataArray(ekslice,dims=dims, coords=newcoords)
+        photon_energy_scan_dataarrays.append(ekslice_binding)
+
+    aligned_eks = []
+    first_ek = photon_energy_scan_dataarrays[0]
+    aligned_eks.append(first_ek)
+
+    for i in np.arange(1,len(photon_energy_scan_dataarrays)):
+        interped = photon_energy_scan_dataarrays[i].interp_like(first_ek)
+        aligned_eks.append(interped)
+
+    aligned_photonE_scan = xr.concat(aligned_eks,'photon_energy')
+    aligned_photonE_scan = aligned_photonE_scan.assign_coords(coords={'photon_energy': zaxis_coord})
+    return aligned_photonE_scan
+
+
