@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from functools import partial
 from scipy.optimize import curve_fit
+from scipy.interpolate import RegularGridInterpolator
 from pyimagetool import ImageTool
 
 
@@ -66,6 +67,11 @@ def fermi_fcn_bg(x, ef, kBT, y0, *coeffs):
 def fermi_fcn_linear_bg(x, ef, kBT, y0, a, b):
     return (a + b * x) / (np.exp((x - ef) / kBT) + 1) + y0
 
+def phi2k(phi, ke):
+    return 0.512 * np.sqrt(ke) * np.sin(np.radians(phi))
+
+def k2phi(k, ke):
+    return np.degrees(np.arcsin(k/(0.512 * np.sqrt(ke))))
 
 @xr.register_dataarray_accessor("arpes")
 class Arpes:
@@ -92,6 +98,9 @@ class Arpes:
         iso_e = iso_e.assign_coords({'kx': (('slit', 'perp'), kxp), 'ky': (('slit', 'perp'), kyp)})
         return iso_e
 
+    # Uses an irregularly spaced k-mesh, very quick, good for just plotting.
+    # If you want a regularly spaced grid, use spectra_k_reg() to get a regularly spaced rectilinear grid
+    # in be vs. k (This is slower)
     @requires_ef
     def spectra_k_irreg(self, phi0):
         KE, F = np.meshgrid(self._obj.arpes.energy, self._obj.arpes.slit, indexing='ij')
@@ -99,6 +108,41 @@ class Arpes:
         self._obj = self._obj.assign_coords(
             {'kx': (('energy', 'slit'), kx), 'binding': (('energy', 'slit'), KE - self.ef)})
         return self._obj
+
+    # This is much slower and relies on scipy RegularGridInterpolator and utilizes linear interpolation
+    # to produce the rectilinear energy vs. k grid. This may not be strictly mathematically exact in preservation
+    # of spectral weight through the transformation. This is roughly equivalent to "TransformToK" in our Igor code
+    # Also assumes that the xarray has been constructed with dimensions energy vs. slit not slit vs. energy
+    @requires_ef
+    def spectra_k_reg(self, phi0):
+        copy = self._obj.copy()
+        interp_object = RegularGridInterpolator((copy.energy.values, copy.slit.values),
+                                                 copy.values, bounds_error=False, fill_value=0)
+        lowk = phi2k(np.nanmin(copy.slit.values) - phi0, np.nanmax(copy.energy.values))
+        highk = phi2k(np.nanmax(copy.slit.values) - phi0, np.nanmax(copy.energy.values))
+        numk = copy.slit.size
+
+        lowe = np.nanmin(copy.energy.values)
+        highe = np.nanmax(copy.energy.values)
+        nume = copy.energy.size
+
+        kx = np.linspace(lowk, highk, num=numk, endpoint=True)
+        ke = np.linspace(lowe, highe, num=nume, endpoint=True)
+        be = ke - self.ef
+
+        output = np.empty(copy.shape)
+
+        i = 0
+        j = 0
+        for energy in ke:
+            for k in kx:
+                counts = interp_object([energy, k2phi(k + phi2k(phi0, energy), energy)])
+                output[i, j] = counts
+                j += 1
+            j = 0
+            i += 1
+        return xr.DataArray(output,dims=['binding','kx'],coords={'binding':be,'kx':kx},attrs=copy.attrs)
+
 
     # Kz maps should always be in binding energy, will need to shift off using a fixed work-function to recover
     # kinetic energy for k conversion
