@@ -1,103 +1,215 @@
 import numpy as np 
 import xarray as xr
+import glob
 
-def spin_txt_import(filename):
-    textfile = open(filename ,"r")
-    text_list = textfile.readlines()
-    textfile.close()
+def spin_txt_import(glob_filenames):
 
-    # How many edc's in this file
-    temp = text_list[1]
-    temp = temp[0:-1].split("=")
-    n_scan = int(temp[1])
+    # Check if input is list or str
 
-
-    # Find the beginning rows of region sections
-    region_start_rows = np.zeros(n_scan)
-    for index, dummy in enumerate(region_start_rows):
-        string_target = '[Region ' + str(index + 1) + ']'
-        for ct, element in enumerate(text_list):
-            if element.find(string_target) != -1:
-                region_start_rows[index] = ct + 1
-                
+    if isinstance(glob_filenames, list):
+        n_files = len(glob_filenames)
+        textfile = open(glob_filenames[0] ,"r")
+        text_list = textfile.readlines()
+        textfile.close()
+    elif isinstance(glob_filenames, str):
+        n_files = 1
+        textfile = open(glob_filenames ,"r")
+        text_list = textfile.readlines()
+        textfile.close()
+    else:
+        raise NameError('Input either list or str')
 
 
-    # Make region dictionary
-    region_dictionary = []
-    for index, row in enumerate(region_start_rows):
-        for element in text_list[int(row):]:
-            if element == '\n':
-                break
-            note = element[0:-1].split("=")
-            if len(note) == 2:
-                region_dictionary.append((note[0]+str(index + 1), note[1]))
-    region_dictionary = dict(region_dictionary)
+    # Hard coded row numbers
+    info_row_num = 17
+    data_row_num = 52
+    ThetaX_row_num = 43
+    ThetaY_row_num = 44
 
-    num_steps = np.zeros(n_scan)
-    for index, dummy in enumerate(num_steps):
-        num_steps[index] = int(region_dictionary['Signal steps' + str(index+1)])
+    # Dimension 1
+    sp_st = text_list[6][0:-1].split('=')
+    dim1_name = sp_st[1]
+    sp_st = text_list[7][0:-1].split('=')
+    dim1_size = int(sp_st[1])
+    sp_st = text_list[8][0:-1].split('=')
+    dim1 = np.fromstring(sp_st[1], sep = ' ')
+    # Dimension 2
+    dim2_name = 'ThetaY'
+    dim2_size = n_files
+    dim2 = np.zeros(n_files)
 
+    # Initialize empty data array
+    dataset = np.zeros((dim1_size, dim2_size))
 
-    # Find the beginning rows of info sections
-    info_start_rows = np.zeros(n_scan)
-    for index, dummy in enumerate(info_start_rows):
-        string_target = '[Info ' + str(index + 1) + ']'
-        for ct, element in enumerate(text_list):
-            if element.find(string_target) != -1:
-                info_start_rows[index] = ct + 1
-
-
-    # Make info dictionary
+    # Get metadata & make info dictionary 
     info_dictionary = []
-    for index, row in enumerate(info_start_rows):
-        for pt, element in enumerate(text_list[int(info_start_rows[index]):]):
-            if element == '\n':
-                break
-            note = element[0:-1].split("=")
-            if len(note) == 2:
-                info_dictionary.append((note[0]+str(index + 1), note[1]))
+    for pt, element in enumerate(text_list[info_row_num:]):
+        if element == '\n':
+            break
+        note = element[0:-1].split("=")
+        if len(note) == 2:
+            info_dictionary.append((note[0], note[1]))
     info_dictionary = dict(info_dictionary)
 
 
-    # Find the beginning rows of data sets
-    data_start_rows = np.zeros(n_scan)
+    # Import data & ThetaY values in every file
+    if isinstance(glob_filenames, list):
+        for index, element in enumerate(glob_filenames):
+            textfile = open(element ,"r")
+            text_list = textfile.readlines()
+            textfile.close()
 
-    for index, dummy in enumerate(data_start_rows):
-        string_target = '[Signal ' + str(index + 1) + ']'
-        for ct, element in enumerate(text_list):
-            if element.find(string_target) != -1:
-                data_start_rows[index] = ct + 1
+            # Data import
+            for data_index, datarow in enumerate(text_list[data_row_num:]):
+                if datarow == '\n':
+                    break
+                temp = np.fromstring(datarow, sep = ' ')
+                dataset[data_index, index] = temp[3]
+            
+            # ThetaY import
+            sp_st = text_list[ThetaY_row_num][0:-1].split('=')
+            dim2[index] = float(sp_st[1])
+    else:
+        textfile = open(glob_filenames ,"r")
+        text_list = textfile.readlines()
+        textfile.close()
 
-
-    # Make data array
-    dataset = np.zeros((n_scan,int(num_steps[0])))
-    edc = np.zeros((int(num_steps[0])))
-
-    for index, row in enumerate(data_start_rows):
-        for pt, element in enumerate(text_list[int(row):]):
-            if element == '\n':
+        # Data import
+        for data_index, datarow in enumerate(text_list[data_row_num:]):
+            if datarow == '\n':
                 break
-            temp_row = np.fromstring(element, sep = ' ')
-            ydiff = temp_row[3]
-            eV = temp_row[0]
-            edc[pt] = ydiff
-        dataset[index, :] = edc
+            temp = np.fromstring(datarow, sep = ' ')
+            dataset[data_index, 0] = temp[3]
+            
+        # ThetaY import
+        sp_st = text_list[ThetaY_row_num][0:-1].split('=')
+        dim2[0] = float(sp_st[1])
 
-
-    # Make Energy range and Angle range for xarray coordinates
-    e_range_str = region_dictionary['Dimension 1 scale1']
-    e_range = np.fromstring(e_range_str, sep = ' ')
-    a_range = np.zeros(n_scan)
-    for index, dummy in enumerate(a_range):
-        a_range[index] = info_dictionary['ThetaY'+str(index+1)]
-
-
-    coord_dictionary = dict([(region_dictionary['Dimension 1 name1'], e_range), ('ThetaY', a_range)])
-
-    return xr.DataArray(
-        data= dataset,
-        dims= ['ThetaY', region_dictionary['Dimension 1 name1']],
-        coords= coord_dictionary,
-        attrs= info_dictionary
-    )
+    coord_dictionary = dict([(dim1_name, dim1), (dim2_name, dim2)])
+    flat_coords = dict([(dim1_name, dim1)])
     
+    if n_files != 1:
+        return xr.DataArray(
+            data= dataset,
+            dims= [dim1_name, dim2_name],
+            coords= coord_dictionary,
+            attrs= info_dictionary
+        )
+    else:
+        return xr.DataArray(
+            data= dataset[:,0],
+            dims= [dim1_name],
+            coords= flat_coords,
+            attrs= info_dictionary
+        )
+
+def spectra_txt_import(glob_filenames):
+
+    # Check if input is list or str
+
+    if isinstance(glob_filenames, list):
+        n_files = len(glob_filenames)
+        textfile = open(glob_filenames[0] ,"r")
+        text_list = textfile.readlines()
+        textfile.close()
+    elif isinstance(glob_filenames, str):
+        n_files = 1
+        textfile = open(glob_filenames ,"r")
+        text_list = textfile.readlines()
+        textfile.close()
+    else:
+        raise NameError('Input either list or str')
+
+
+    # Hard coded row numbers
+    info_row_num = 14
+    data_row_num = 51
+    ThetaX_row_num = 44
+    ThetaY_row_num = 45
+
+    # Dimension 1
+    sp_st = text_list[6][0:-1].split('=')
+    dim1_name = sp_st[1]
+    sp_st = text_list[7][0:-1].split('=')
+    dim1_size = int(sp_st[1]) + 1
+    sp_st = text_list[8][0:-1].split('=')
+    dim1 = np.fromstring(sp_st[1], sep = ' ')
+    # Dimension 2
+    sp_st = text_list[9][0:-1].split('=')
+    dim2_name = sp_st[1]
+    sp_st = text_list[10][0:-1].split('=')
+    dim2_size = int(sp_st[1]) + 1
+    sp_st = text_list[11][0:-1].split('=')
+    dim2 = np.fromstring(sp_st[1], sep = ' ')
+    # Dimension 3
+    dim3_name = 'ThetaX'
+    dim3_size = n_files
+    dim3 = np.zeros(n_files)
+
+    # Initialize empty data array
+    dataset = np.zeros((dim1_size, dim2_size, n_files))
+
+    # Get metadata & make info dictionary 
+    info_dictionary = []
+    for pt, element in enumerate(text_list[info_row_num:]):
+        if element == '\n':
+            break
+        note = element[0:-1].split("=")
+        if len(note) == 2:
+            info_dictionary.append((note[0], note[1]))
+    info_dictionary = dict(info_dictionary)
+
+    # Import data & ThetaX values in every file
+    if isinstance(glob_filenames, list):
+        for index, element in enumerate(glob_filenames):
+            textfile = open(element ,"r")
+            text_list = textfile.readlines()
+            textfile.close()
+
+            # Data import
+            for data_index, datarow in enumerate(text_list[data_row_num:]):
+                if datarow == '\n':
+                    break
+                dataset[data_index, :, index] = np.fromstring(datarow, sep = ' ')
+            
+            # ThetaX import
+            sp_st = text_list[ThetaX_row_num][0:-1].split('=')
+            dim3[index] = int(sp_st[1])
+    else:
+        textfile = open(glob_filenames ,"r")
+        text_list = textfile.readlines()
+        textfile.close()
+
+        # Data import
+        for data_index, datarow in enumerate(text_list[data_row_num:]):
+            if datarow == '\n':
+                break
+            dataset[data_index, :, 0] = np.fromstring(datarow, sep = ' ')
+        
+        # ThetaX import
+        sp_st = text_list[ThetaX_row_num][0:-1].split('=')
+        dim3[0] = int(sp_st[1])
+    
+
+    # Seems the data has one more point than the dimensions.. Not sure why the mismatch
+    dataset = dataset[0:-1, 0:-1, :]
+
+    coord_dictionary = dict([(dim1_name, dim1), (dim2_name, dim2), (dim3_name, dim3)])
+
+    # For case with only one file
+    flat_coords = dict([(dim1_name, dim1), (dim2_name, dim2)])
+
+    if n_files != 1:
+        return xr.DataArray(
+            data= dataset,
+            dims= [dim1_name, dim2_name, dim3_name],
+            coords= coord_dictionary,
+            attrs= info_dictionary
+        )
+    else:
+        return xr.DataArray(
+            data= dataset[:,:,0],
+            dims= [dim1_name, dim2_name],
+            coords= flat_coords,
+            attrs= info_dictionary
+        )
