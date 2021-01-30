@@ -103,6 +103,7 @@ class Arpes:
     # in be vs. k (This is slower)
     @requires_ef
     def spectra_k_irreg(self, phi0):
+        #TODO: Should take a theta coordinate. should be np.sqrt(KE)*cos(theta-theta0)*...
         KE, F = np.meshgrid(self._obj.arpes.energy, self._obj.arpes.slit, indexing='ij')
         kx = 0.512 * np.sqrt(KE) * np.sin(np.pi / 180 * (F - phi0))
         self._obj = self._obj.assign_coords(
@@ -141,7 +142,9 @@ class Arpes:
                 j += 1
             j = 0
             i += 1
-        return xr.DataArray(output,dims=['binding','kx'],coords={'binding':be,'kx':kx},attrs=copy.attrs)
+        output = xr.DataArray(output, dims=['binding', 'kx'], coords={'binding': be, 'kx': kx}, attrs=copy.attrs)
+        output.arpes.ef = 0.0
+        return output
 
 
     # Kz maps should always be in binding energy, will need to shift off using a fixed work-function to recover
@@ -263,12 +266,16 @@ class Arpes:
 
     @requires_ef
     def sel_binding(self, *args):
+        """
+        definition of binding: KE-Ef assumes binding energy is negative number.
+        """
         if len(args) == 2:
             return self._obj.sel({'energy': slice(args[0] + self.ef, args[1] + self.ef)})
         else:
             raise ValueError('binding only accepts min and max')
 
     def sel_kinetic(self, *args):
+        print(args)
         if len(args) == 2:
             return self._obj.sel({'energy': slice(args[0], args[1])})
         else:
@@ -404,7 +411,9 @@ class Arpes:
             slicer[i] = slice(None, extra)
             dat_mat = dat_mat[tuple(slicer)]
         mat = bin_ndarray(dat_mat, new_shape, operation=operation)
-        return xr.DataArray(mat, coords=new_coords, dims=dat.dims, attrs=dat.attrs)
+        output = xr.DataArray(mat, coords=new_coords, dims=dat.dims, attrs=dat.attrs)
+        output.arpes.ef = self.ef
+        return output
 
     def plot(self, layout=ImageTool.LayoutComplete):
         self.it = ImageTool(self._obj, layout=layout)

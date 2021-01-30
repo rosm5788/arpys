@@ -6,6 +6,8 @@ import igor.igorpy as igor
 
 
 def load_merlin_pxt_single(filename):
+    # TODO: Is this consistent with other loaders? I found dewarping process did not require transpose where it does
+    # for Dimaond data?
     conv = {'eV': 'energy', 'deg': 'slit'}
 
     #Read in using this byte-order, idk if this is going to work on everyone's machine
