@@ -913,11 +913,17 @@ class MDC(Core):
             if not self.dispersion:
                 self.extract_dispersion()
             for key in self.dispersion.keys():
-                k_min = np.amin(self.MDC_peaks[key]) - pad_k_dispersion
-                k_max = np.amax(self.MDC_peaks[key]) + pad_k_dispersion
-                k = np.arange(k_min, k_max,
-                              step=(self.cr.kx.values[1]-self.cr.kx.values[0]))
-                ax.plot(k, self.dispersion[key](k), *plot_dispersion_args, **plot_dispersion_kwargs)
+                if self.dispersion[key].variable == 'kx':
+                    k_min = np.amin(self.MDC_peaks[key]) - pad_k_dispersion
+                    k_max = np.amax(self.MDC_peaks[key]) + pad_k_dispersion
+                    k = np.arange(k_min, k_max,
+                                  step=(self.cr.kx.values[1]-self.cr.kx.values[0]))
+                    ax.plot(k, self.dispersion[key](k), *plot_dispersion_args, **plot_dispersion_kwargs)
+                else:
+                    E_min = np.amin(self.cr.binding.values) - pad_k_dispersion
+                    E_max = np.amax(self.cr.binding.values) + pad_k_dispersion
+                    E = np.arange(E_min, E_max, self.cr.binding.values[1] - self.cr.binding.values[0])
+                    ax.plot(self.dispersion[key](E), E, *plot_dispersion_args, **plot_dispersion_kwargs)
         if plot_crop_region_bounds:
             ax.plot([self.cr_bounds[0], self.cr_bounds[1], self.cr_bounds[1], self.cr_bounds[0], self.cr_bounds[0]],
                     [self.cr_bounds[2], self.cr_bounds[2], self.cr_bounds[3], self.cr_bounds[3], self.cr_bounds[2]],
@@ -952,7 +958,7 @@ class MDC(Core):
                             "xarray.MDC.fit_ROI()")
         return
 
-    def extract_dispersion(self, **kwargs):
+    def extract_dispersion(self, force_E_dependent = False, **kwargs):
         """
         Get the dispersion, E(k), where E(k) is a fited polynomial. pass deg=int to control order of poly
         inputs:
@@ -977,13 +983,29 @@ class MDC(Core):
             self.extract_peaks()
 
         # Loop over the keys of MDC_peaks, which should be all function labels that contain center parameters, no bg
-        y = self.cr.binding.values  # Same energies for all fits.
+        Energies = self.cr.binding.values  # Same energies for all fits.
         for key in self.MDC_peaks.keys():
-            x = self.MDC_peaks[key]
-            coefs = np.polyfit(x, y, **kwargs)  # returns coefficients of poly fit of E(k)
+            k = self.MDC_peaks[key]
+            # Turns out the polyfits are better, if domain is variable with larger variance...
+            if Energies.std() > k.std() and not force_E_dependent:
+                # In this case, E will be the domain, and we will find k(E)
+                x = Energies
+                y = k
+                E_independent = True
+            else:
+                # In this case, k will be the domain, and we will find E(k)
+                x = k
+                y = Energies
+                E_independent = False
+            coefs = np.polyfit(x, y, **kwargs)  # returns coefficients of poly fit
 
             # Dict: keys function labels, returns 1dpoly interpolation object. get E_{key}(k) = self.dispersion[key](k)
-            self._dispersion[key] = np.poly1d(coefs, variable='kx')
+            # If variable is 'kx', but if it is binding get k_{key}(binding) = self.dispersion[key](binding)
+            # Check what the independent variable is with self.dispersion[key].variable
+            if E_independent:
+                self._dispersion[key] = np.poly1d(coefs, variable='binding')
+            else:
+                self._dispersion[key] = np.poly1d(coefs, variable='kx')
 
             # Get vf if appropriate; so I need kf if the band crosses Ef.
             # If Ef is not within fitting window or within 100 meV of upper bound of fitting window, don't get vf or kf.
@@ -992,43 +1014,72 @@ class MDC(Core):
                 d_coefs = []
                 all_kf = []
                 all_vf = []
-                roots = np.roots(coefs)  # Get roots of E(k), since Ef=0
-                realroots = [n for n in roots if isinstance(n, float)]  # keep only real roots.
-                count = 0
-                for root in realroots:
-                    if np.amax(x) > root > np.amin(x):
-                        kf = root  # E is in binding; sp of root is real and within domain of the fit, it is kf.
-                        count += 1  # Number of viable kfs found, expect to be only 1.
+                if not E_independent:
+                    roots = np.roots(coefs)  # Get roots of E(k), since Ef=0
+                    realroots = [n for n in roots if isinstance(n, float)]  # keep only real roots.
+                    count = 0
+                    for root in realroots:
+                        if np.amax(x) > root > np.amin(x):
+                            kf = root  # E is in binding; sp of root is real and within domain of the fit, it is kf.
+                            count += 1  # Number of viable kfs found, expect to be only 1.
+                            if not d_coefs:
+                                N = kwargs['deg']
+                                for j in range(N):
+                                    d_coefs.append((N - j) * coefs[j])
+                            vf = np.poly1d(d_coefs)(kf)  # vf is, of course, the derivative of E(k) at kf.
+                            all_kf.append(kf)
+                            all_vf.append(vf)
+                        elif self.cr_bounds[0] < root < self.cr_bounds[1]:
+                            print('Be advised for function_key: ', key, ' found kf outside of range min(MDC_peaks)'
+                                                                        'to max(MDC_peaks), which is domain of polyfit; '
+                                                                        'however, I did find a kf within your cr_bounds'
+                                                                        ' over which MDCs were fit; so I will find vf and '
+                                                                        'store vf and kf for this point, but this may be'
+                                                                        'misleading, use discretion.')
+                            kf = root  # E is in binding; sp of root is real and within domain of the fit, it is kf.
+                            count += 1  # Number of viable kfs found, expect to be only 1.
+                            if not d_coefs:
+                                N = kwargs['deg']
+                                for j in range(N):
+                                    d_coefs.append((N-j)*coefs[j])
+                            vf = np.poly1d(d_coefs)(kf)  # vf is, of course, the derivative of E(k) at kf.
+                            all_kf.append(kf)
+                            all_vf.append(vf)
+                    # Store the kf and vf pairs we found.
+                    self._vf[key] = np.asarray(all_vf)
+                    self._kf[key] = np.asarray(all_kf)
+                    if count > 1:
+                        print("Be advised: found more than 1 kf, meaning polynomial fit crosses Ef more than once within"
+                              "the domain of the fit of the polynomial to (centers, binding), for this function_key_label",
+                              key)
+                else:
+                    if np.amax(y) > np.poly1d(coefs)(0) > np.amin(y):  # is k(E=0) within k's of fit?
+                        kf = np.poly1d(coefs)(0)  # k(E=0) is kf and there can only be one, because k(E) is a function.
                         if not d_coefs:
                             N = kwargs['deg']
                             for j in range(N):
                                 d_coefs.append((N - j) * coefs[j])
-                        vf = np.poly1d(d_coefs)(kf)  # vf is, of course, the derivative of E(k) at kf.
+                        vf = 1/np.poly1d(d_coefs)(kf)  # vf is, of course, the derivative of E(k) at kf. or (dk/dE)^-1
                         all_kf.append(kf)
                         all_vf.append(vf)
-                    elif self.cr_bounds[0] < root < self.cr_bounds[1]:
+                    elif self.cr_bounds[0] < np.poly1d(coefs)(0) < self.cr_bounds[1]:
                         print('Be advised for function_key: ', key, ' found kf outside of range min(MDC_peaks)'
                                                                     'to max(MDC_peaks), which is domain of polyfit; '
                                                                     'however, I did find a kf within your cr_bounds'
                                                                     ' over which MDCs were fit; so I will find vf and '
                                                                     'store vf and kf for this point, but this may be'
                                                                     'misleading, use discretion.')
-                        kf = root  # E is in binding; sp of root is real and within domain of the fit, it is kf.
-                        count += 1  # Number of viable kfs found, expect to be only 1.
+                        kf = np.poly1d(coefs)(0)  # k(E=0) is kf and there can only be one, because k(E) is a function.
                         if not d_coefs:
                             N = kwargs['deg']
                             for j in range(N):
                                 d_coefs.append((N-j)*coefs[j])
-                        vf = np.poly1d(d_coefs)(kf)  # vf is, of course, the derivative of E(k) at kf.
+                        vf = 1/np.poly1d(d_coefs)(kf)  # vf is, of course, the derivative of E(k) at kf. or (dk/dE)^-1
                         all_kf.append(kf)
                         all_vf.append(vf)
-                # Store the kf and vf pairs we found.
-                self._vf[key] = np.asarray(all_vf)
-                self._kf[key] = np.asarray(all_kf)
-                if count > 1:
-                    print("Be advised: found more than 1 kf, meaning polynomial fit crosses Ef more than once within"
-                          "the domain of the fit of the polynomial to (centers, binding), for this function_key_label",
-                          key)
+                    # Store the kf and vf pairs we found.
+                    self._vf[key] = np.asarray(all_vf)
+                    self._kf[key] = np.asarray(all_kf)
         return
 
     @property
