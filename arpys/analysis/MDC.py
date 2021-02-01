@@ -163,18 +163,20 @@ class MDC(Core):
         Return the residuals of the model (MDC-fit)*eps, if eps are supplied. If no MDC data is supplied, then
         just retun the fit. eps is the uncertainty on data, assumed 1 if not supplied.
         The model used is defined implicitly based on the params being used. Basically, your fit must be a linear
-        combination of Gaussians, Voigts, Lorentzians, and a constant. For every Gaussian(Voigt) + str + 'center' there will be a
-        Gaussian (Voigt) function added to the model for fitting. The remaining parameters of each function type may be
-        defined or explicitly, otherwise, default initial guesses and bounds will be supplied.
+        combination of Gaussians, Voigts, Lorentzians, and a constant. For every Gaussian/Voigt/Lorentzian + str +
+        'center' there will be a Gaussian/Voigt/Lorentzian function added to the model for fitting.
+        The remaining parameters of each function type may be
+        defined explicitly, otherwise, default initial guesses and bounds will be supplied.
+
         inputs: params is an instance of lmfit's Parameters() object, kx is the domain of the fit List or np.array of
-        floats, and MDC is the data to be fit (list or np.array of floats of the same length of kx.
+        floats, MDC is the data to be fit (list or np.array of floats of the same length of kx, eps is the uncertainty,
+        which should have the same length as MDC or constnat, haven't tested this. function_key_labels is a list of str
+        that represent all of the functions comprising the fit. So, if you have a param 'Gaussian_center', then function
+        key labels contains 'Gaussian_'.
         """
         parvals = params.valuesdict()
         fit = np.zeros(len(kx))
-        # Go through parameter names and find constants, Gaussians, Voigts, and Lorentzians by the definition of their
-        # center parameter. Use all necesesary, similarly labeled parameters for the function type to add to the
-        # function to the overall fit model.
-        if isinstance(function_key_labels, list) and function_key_labels:
+        if isinstance(function_key_labels, list) and function_key_labels:  # If I know these, build the model.
             # Only advantage is that key_labels has fewer elements. key_label is a str(function name)+str(some string
             # that acts as a label)
             for keys in function_key_labels:
@@ -211,6 +213,9 @@ class MDC(Core):
                                                          "parameter of the Lorentzian function that did not follow the "
                                                          "same pattern of 'Lorentzian' + str_key + (lower-case "
                                                          "parameter: gamma or amplitude).")
+        # Go through parameter names and find constants, Gaussians, Voigts, and Lorentzians by the definition of their
+        # center parameter. Use all necesesary, similarly labeled parameters for the function type to add to the
+        # function to the overall fit model.
         else:
             for keys in parvals:
                 if keys == 'DC_offset' or keys == 'Constant' or keys == 'constant' or keys == 'Offset' or \
@@ -277,14 +282,15 @@ class MDC(Core):
 
     def fit_ROI(self, eps: List[float] = None):
         """
-        Main use of class—fit the preselected crop region's MDCs with a fit function.
+        Main use of class: fit the preselected crop region's MDCs with a fit function.
         Take every MDC in the ROI and fit it with a specified fit function.
         Workflow: prior to calling this method, user should select the ROI, pre-smooth/down-sample the ARPES image.
         Then, call this function, which will fit every MDC with the same fit function; so if no downsampling nor
-        nor cropping, then this function tries to fit something like 1000 MDCs, depending on image resolution, probably
+         cropping, then this function tries to fit something like 1000 MDCs, depending on image resolution, probably
         slow...
-        inputs: eps needs to be an nd.array of the same shape as the ROI/...MDC.cr
+        inputs: eps needs to be an nd.array of the same shape as the ROI/...MDC.cr haven't tested.
         """
+
         # Make sure parameters are specified correctly and apply lower bound of 0 on all widths and amplitudes, unless
         # User specified the bounds of parameters to be something other than -np.inf already.
 
@@ -294,12 +300,12 @@ class MDC(Core):
         else:  # We have already run self.prepare_fit_params().
             try:
                 _ = self.check_params_labels(self._param_keys)  # check to see if the parameters have changed.
-            except MDC_Fit_Parameter_Mislabel:  # If they have, this error will bee thrown.
+            except MDC_Fit_Parameter_Mislabel:  # If they have, this error will be thrown.
                 # So, empty and _param_keys and re-prepare them for the fit.
                 self._param_keys = []
                 self.prepare_fit_params()
 
-        # New fit, new results, dispersions, etc...
+        # New fit: new results, dispersions, etc...
         # Empty self._fit_ROI_results:
         if self._fit_ROI_results:
             self._fit_ROI_results = []
@@ -344,6 +350,7 @@ class MDC(Core):
         return
 
     def previous_fit_as_guess_next_fit(self):
+        # Set the starting value for fitting the next MDC as the results of the previous fitted MDC.
         parvals = self.params.valuesdict()
         for keys in parvals:
             self.params[keys].value = self.fit_ROI_results[-1].params[keys].value
@@ -351,6 +358,10 @@ class MDC(Core):
 
     @property
     def fit_ROI_results(self):
+        """
+        This property is a list of length len(self.cr.binding.values) and contains all minimizer results (see lmfit
+         minimize docs) from fit.
+        """
         if not self._fit_ROI_results:
             print('Need to run fit_ROI method on your MDC extension of xarray. If you think you have, for some reason'
                   'this was not populated with your results of fits...?')
@@ -364,6 +375,9 @@ class MDC(Core):
 
     @property
     def fit_results_stored(self):
+        """
+        Not tested yet.
+        """
         return self._fit_results_stored
 
     @fit_results_stored.setter
@@ -376,6 +390,8 @@ class MDC(Core):
     def assign_default_bounds_Gaussian(self, label: str, Gaussian: str):
         """
         Assign default bounds to the Gaussian parameters, unless bounds have already been explicitly defined.
+        inputs: label is a string that contains the unique label of this Gaussian function. Gaussian is a string that is
+        either 'gaussian' or 'Gaussian'—had no way to know if user used capital letter or not.
         """
         # Center of peak should be within the domain.
         if self.params[Gaussian+label+'center'].min == -np.inf:
@@ -393,8 +409,9 @@ class MDC(Core):
     def check_Gaussian_names(self, label: str, Gaussian: str):
         """
         This function makes sure that for any label defining a Gaussian function, there are all of the
-        associated parameters required to fully parameterize a Gaussian function with lower bounds of 0 on all
-        parameters, unless specified to something other than -np.inf by user.
+        associated parameters required to fully parameterize a Gaussian function.
+        inputs: label is a string that contains the unique label of this Gaussian function. Gaussian is a string that is
+        either 'gaussian' or 'Gaussian'—had no way to know if user used capital letter or not.
         """
         parvals = self.params.valuesdict()
         # Treat a background specially? Not yet.
@@ -413,6 +430,8 @@ class MDC(Core):
     def assign_default_bounds_Voigt(self, label: str, Voigt: str):
         """
         Assign default bounds to the Voigt parameters, unless bounds have already been explicitly defined.
+        inputs: label is a string that contains the unique label of this Voigt function. Voigt is a string that is
+        either 'voigt' or 'Voigt'—had no way to know if user used capital letter or not.
         """
         # Bound the center to the  crop region of the fit. No peaks outside the domain.
         if self.params[Voigt + label + 'center'].min == -np.inf:
@@ -434,6 +453,8 @@ class MDC(Core):
         """
         This function makes sure that for any label defining a voigt function, there are all of the parameters required
         to fully parameterize a Voigt function.
+        inputs: label is a string that contains the unique label of this Voigt function. Voigt is a string that is
+        either 'voigt' or 'Voigt'—had no way to know if user used capital letter or not.
         """
 
         parvals = self.params.valuesdict()
@@ -461,6 +482,8 @@ class MDC(Core):
         """
         This function makes sure that for any label defining a Lorentzian function, there are all of the parameters
         required to fully parameterize a Lorentzian function.
+        inputs: label is a string that contains the unique label of this Lorentzian function. Lorentzian is a string
+        that is either 'lorentzian' or 'Lorentzian'—had no way to know if user used capital letter or not.
         """
 
         parvals = self.params.valuesdict()
@@ -480,6 +503,8 @@ class MDC(Core):
     def assign_default_bounds_Lorentzian(self, label: str, Lorentzian: str):
         """
         Assign default bounds to the Lorentzian parameters, unless bounds have already been explicitly defined.
+        inputs: label is a string that contains the unique label of this Lorentzian function. Lorentzian is a string
+        that is either 'lorentzian' or 'Lorentzian'—had no way to know if user used capital letter or not.
         """
         # Bound the center to the  crop region of the fit. No peaks outside the domain.
         if self.params[Lorentzian + label + 'center'].min == -np.inf:
@@ -495,6 +520,11 @@ class MDC(Core):
         return
 
     def prepare_fit_params(self):
+        """
+        Make sure the self.params object has some parameters, that any function with a center parameter also has
+        the other required parameters (amplitude, etc.), that the naming scheme follows the required naming scheme of
+        params, and assign some default bounds (unless the user set self._no_default_bounds = True).
+        """
         parvals = self.params.valuesdict()
         expected_parameter_names = []
         self._function_key_labels = []
@@ -577,7 +607,8 @@ class MDC(Core):
 
     def check_params_labels(self, expected_params: List[str]):
         """
-        Compare the names of parameters to a list of parameter names that I expect to find, expected_params.
+        Compare the names of parameters to a list of parameter names that I expect to find, expected_params. If the
+        parameter names are not the expected_params exactly, throw reasonable error to help user name them correctly.
         """
         parvals = self.params.valuesdict()
         param_names = []
@@ -638,15 +669,19 @@ class MDC(Core):
             tot_fits: if true, then plot the total fit for each MDC plotted on the axis, overlaying MDCs.
             individual_fits: if true, then plot individually all of the functions which add up to the total fit function
             remove_constant: if true, subtract constant from everything plotted, e.g. MDC + offset - constant.
+            only_one: if an int, then acts as the index of the MDC,fit, etc. being plotted. As in, no waterfall,
+            only_one MDC, etc.
             offset = spacing between each MDC, total fits and individual fits of MDC.
             dE = energy spacing between each MDC/fit grabbed for plotting, if dE=0 plot every MDC, fit, etc.
             plot_single_fit_function if you provide a string, it should be the function name + label of the individual
                 fit you want to plot, which is in constrast to making infividual_fits true, which plots ALL individual
                 functions of the fit instead of just the one you specify with this.
-            MDC and tot_fit _args are tuples that pass args into ax.plot() for MDC and tot_fit,
-                respectively. args are from matplotlib.plot(), follow their documentation.
-            MDC and tot_fit _kwargs are dicts that pass kwargs into ax.plot() for MDC and tot_fit,
-                respectively. kwargs are from matplotlib.plot(), follow their documentation.
+            MDC, single_fit_function, and tot_fit _args are tuples that pass args into ax.plot() for MDC,
+                single_fit_function, and tot_fit, respectively. args are from matplotlib.plot(), follow their
+                documentation.
+            MDC, single_fit_function, and tot_fit _kwargs are dicts that pass kwargs into ax.plot() for MDC,
+                single_fit_function, and tot_fit, respectively. kwargs are from matplotlib.plot(), follow their
+                documentation.
             individual_fits_args can either be a single tuple of args to be used for every individual
                 function of the total fit function, or can be a list of tuples of the same length as the number of
                 individual fitting functions, including constant, comprising the total fit model. In the latter case,
@@ -902,6 +937,22 @@ class MDC(Core):
                          plot_dispersion_args: tuple = ('r'), plot_crop_region_bounds_args: tuple = ('w'),
                          plot_peaks_kwargs: dict = {}, plot_dispersion_kwargs: dict = {},
                          plot_crop_region_bounds_kwargs: dict = {}):
+        """
+        plot E-k ARPES image, peak locations, and fitted dispersion.
+        inputs:
+        ax: an axis object from matplotlib, on which things will be plotted.
+        plot_data: If true, plot E-k ARPES image
+        plot_peaks: If true, plot the peak locations from MDC fittings as (E,k) points.
+        plot_dispersion: If true, plot polynomial fits to MDC peak locations.
+        plot_crop_region_bounds: If true, plot a box representing the crop region of the ARPES image used for MDC
+            fitting.
+        pad_k_dispersion: Float that extends the domain of the plotted polynomial dispersion beyond the k/E-range of the
+             MDC peak locations used for the polyfit by +/-pad_k_dispersion
+        plot_peaks, plot_dispersion, and plot_crop_region_bounds + _args is a tuple of arguments passed to ax.plot()
+            function from matplotlib. See their document for acceptable args.
+        plot_peaks, plot_dispersion, and plot_crop_region_bounds + _kwargs is a dict of key word arguments passed to
+            ax.plot() function from matplotlib. See their document for acceptable kwargs.
+        """
         if plot_data:  # Then plot the image on ax.
             self._obj.plot(x='kx', y='binding', ax=ax)
         if plot_peaks:
@@ -1090,9 +1141,11 @@ class MDC(Core):
         functions with str_key = 'bg', 'back_ground' ... (see self.extract_peaks method for if statement that explicitly
         shows which str_key labels are neglected). These are neglected because we do not want dispersion of
         background peaks.
+        self.dispersion[key].variable tells you whether E or k are independent
+                            variable.
 
-        return: dict[key] = numpy.poly1d that represents dispersion. These objects can be fed a k value, and will spit
-                            out E(k).
+        return: dict[key] = numpy.poly1d that represents dispersion. These objects can be fed a k [E] value, and will
+                            spit out E(k) [k(E)].
         """
         if not self._dispersion:  # If still empty, extract it.
             self.extract_dispersion()
@@ -1104,7 +1157,7 @@ class MDC(Core):
         Return the individual functions of the total fit, e.g. each Voigt, Gaussian, Offset, and Lorentzian individually
         Follows similar form as residual method.
         Return: list of (numpy arrays with length of kx), where each element of the list is one of the functions and
-        thus the list has length equal to the number of constants, Gaussians, Voigts, and Lorentzians in model.
+        thus the list has length equal to the number of Gaussians, Voigts, and Lorentzians in model. Ignore the constant
         """
         parvals = params.valuesdict()
         fit = {}
@@ -1229,6 +1282,9 @@ class MDC(Core):
 
     @property
     def constants(self):
+        """
+        List of floats that are the constants of the fits to MDC. Therefore, list has length of self.cr.binding.values.
+        """
         return self._constants
 
     @constants.setter
@@ -1238,7 +1294,7 @@ class MDC(Core):
 
     def acquire_all_constants(self):
         """
-        Parse through
+        Get all of the constants from fits. 
         """
         # Make sure fits exist; otherwise, no constants to extract from fits.
         if not self.fit_ROI_results:
