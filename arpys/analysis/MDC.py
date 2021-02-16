@@ -54,11 +54,11 @@ class MDC(Core):
         # initial guess of the parameters to fit the next MDC. True is usually a good idea.
         self._previous_fit_as_guess_next_fit = True
         self._constant_key = None  # Key used by the user for the constant, since my code allows some flexibility.
-
+        self._constant_fit_results = []  # If running bootstrap, fit an unconstrained constant to serve as our baseline.
+        self._bootstrap_fit_ensemble = {}
 
         self._param_keys = []  # A list of parameter names populated after parameter names are confirmed correct.
         self._constants = []  # A list of fitted constants populated after fit.
-
         """
         A list of the function names + label (str_key synonomous). For each, there should also be all associated params 
         to complete parameterization of function. i.e. Suppose user defined 'Voigt_1_center', then my code attempts to 
@@ -154,8 +154,10 @@ class MDC(Core):
               'try to catch you and warn you. Good Luck!')
         return
 
-    def fit_MDC(self, MDC: List[float], eps: List[float] = None, function_key_labels: List[str] = None):
-        return minimize(self.residual, self.params, args=(self.cr.kx.values, MDC, eps, function_key_labels))
+    def fit_MDC(self, MDC: List[float], eps: List[float] = None, function_key_labels: List[str] = None,
+                minimize_args: tuple = (), minimize_kwargs: dict = {}):
+        return minimize(self.residual, self.params, args=(self.cr.kx.values, MDC, eps, function_key_labels),
+                        *minimize_args, **minimize_kwargs)
 
     @staticmethod
     def residual(params, kx, MDC: List[float] = None, eps: List[float] = None, function_key_labels: List[str] = None):
@@ -280,7 +282,8 @@ class MDC(Core):
             return fit - MDC
         return (fit - MDC)/eps
 
-    def fit_ROI(self, eps: List[float] = None):
+    def fit_ROI(self, bootstrap: bool = False, eps: List[float] = None, minimize_args: tuple = (),
+                minimize_kwargs: dict = {}):
         """
         Main use of class: fit the preselected crop region's MDCs with a fit function.
         Take every MDC in the ROI and fit it with a specified fit function.
@@ -325,28 +328,107 @@ class MDC(Core):
         if self._kf:
             self._kf = {}
 
-        if eps is None:
-            for E in self.cr.binding.values:
-                # Grab every MDC in the image.
-                data = self.cr.sel(binding=E).values
-                # Fit every MDC:
-                self.fit_ROI_results = self.fit_MDC(data, function_key_labels=self._function_key_labels)
-                if self._previous_fit_as_guess_next_fit:
-                    self.previous_fit_as_guess_next_fit()
+        if bootstrap:
+            if eps is None:
+                for E in self.cr.binding.values:
+                    self._bootstrap_fit_ensemble[E] = []
+                    # Grab every MDC in the image.
+                    data = self.cr.sel(binding=E).values
+                    # Fit every MDC:
+                    # store the initial guesses and bounds for the amplitudes and constants. Then fit an unbounded
+                    # constant to the data, which will serve as a baseline fit.
+                    p0 = {}
+                    constant_bounds = []
+                    switch= False
+                    for keys in self._function_key_labels:
+                        if keys == 'DC_offset' or keys == 'Constant' or keys == 'constant' or keys == 'Offset' or \
+                                keys == 'offset' or keys == 'DC_Offset':
+                            p0[keys] = self.params[keys].value
+                            constant_bounds[0] = self.params[keys].min
+                            constant_bounds[1] = self.params[keys].max
+                            self.params[keys].min = -np.inf
+                            self.params[keys].max = np.inf
+                            switch = True
+                        else:
+                            p0[keys+'amplitude'] = self.params[keys + 'amplitude'].value
+                            self.params[keys+'amplitude'].vary = False
+                            self.params[keys + 'amplitude'].value = 0
+                    # If constant a part of data, fit unconstrained constant to serve as baseline for chi_2 threshold
+                    # else no baseline.
+                    if not switch:
+                        print("No constant in your model, currently set chi_2 threshold to infinity, no baseline to "
+                              "compare to.")
+                        chi_2_threshold = np.inf
+                    else:
+                        self.constant_fit_results = self.fit_MDC(data, function_key_labels=self._function_key_labels,
+                                                                 minimize_args=minimize_args,
+                                                                 minimize_kwargs=minimize_kwargs)
+                        chi_2_threshold = self.constant_fit_results[-1].chisqr
+                    # Restore initial bounds and guesses before running true fits.
+                    for keys in self._function_key_labels:
+                        if keys == 'DC_offset' or keys == 'Constant' or keys == 'constant' or keys == 'Offset' or \
+                                keys == 'offset' or keys == 'DC_Offset':
+                            self.params[keys].value = p0[keys]
+                            self.params[keys].min = constant_bounds[0]
+                            self.params[keys].max = constant_bounds[1]
+                        else:
+                            self.params[keys+'amplitude'].vary = True
+                            self.params[keys + 'amplitude'].value = p0[keys+'amplitude']
+                    # Initial fit you would have gotten if not for the bootstrap:
+                    self._bootstrap_fit_ensemble[E].append(self.fit_MDC(data,
+                                                                        function_key_labels=self._function_key_labels,
+                                                                        minimize_args=minimize_args,
+                                                                        minimize_kwargs=minimize_kwargs))
+                    converge = False
+                    while not converge:
+                        pass
+
+
+                    if self._previous_fit_as_guess_next_fit:
+                        self.previous_fit_as_guess_next_fit()
+            else:
+                if eps.shape != self.cr.values.shape:
+                    raise Exception('You need to specify an eps with a shape equal to the shape of the ROI/cr of your ARPES'
+                                    ' image being fit, i.e. ...MDC.cr.shape')
+                count = 0
+                for E in self.cr.binding.values:
+                    # Grab every MDC in the image.
+                    data = self.cr.sel(binding=E).values
+                    # Fit every MDC with the appropriate eps.
+                    self.fit_ROI_results = self.fit_MDC(data, eps=eps[count, :],
+                                                        function_key_labels=self._function_key_labels,
+                                                        minimize_args=minimize_args,
+                                                        minimize_kwargs=minimize_kwargs)
+                    count += 1
+                    if self._previous_fit_as_guess_next_fit:
+                        self.previous_fit_as_guess_next_fit()
         else:
-            if eps.shape != self.cr.values.shape:
-                raise Exception('You need to specify an eps with a shape equal to the shape of the ROI/cr of your ARPES'
-                                ' image being fit, i.e. ...MDC.cr.shape')
-            count = 0
-            for E in self.cr.binding.values:
-                # Grab every MDC in the image.
-                data = self.cr.sel(binding=E).values
-                # Fit every MDC with the appropriate eps.
-                self.fit_ROI_results = self.fit_MDC(data, eps=eps[count, :],
-                                                    function_key_labels=self._function_key_labels)
-                count += 1
-                if self._previous_fit_as_guess_next_fit:
-                    self.previous_fit_as_guess_next_fit()
+            if eps is None:
+                for E in self.cr.binding.values:
+                    # Grab every MDC in the image.
+                    data = self.cr.sel(binding=E).values
+                    # Fit every MDC:
+                    self.fit_ROI_results = self.fit_MDC(data, function_key_labels=self._function_key_labels,
+                                                        minimize_args=minimize_args,
+                                                        minimize_kwargs=minimize_kwargs)
+                    if self._previous_fit_as_guess_next_fit:
+                        self.previous_fit_as_guess_next_fit()
+            else:
+                if eps.shape != self.cr.values.shape:
+                    raise Exception('You need to specify an eps with a shape equal to the shape of the ROI/cr of your ARPES'
+                                    ' image being fit, i.e. ...MDC.cr.shape')
+                count = 0
+                for E in self.cr.binding.values:
+                    # Grab every MDC in the image.
+                    data = self.cr.sel(binding=E).values
+                    # Fit every MDC with the appropriate eps.
+                    self.fit_ROI_results = self.fit_MDC(data, eps=eps[count, :],
+                                                        function_key_labels=self._function_key_labels,
+                                                        minimize_args=minimize_args,
+                                                        minimize_kwargs=minimize_kwargs)
+                    count += 1
+                    if self._previous_fit_as_guess_next_fit:
+                        self.previous_fit_as_guess_next_fit()
         return
 
     def previous_fit_as_guess_next_fit(self):
@@ -371,6 +453,23 @@ class MDC(Core):
     @fit_ROI_results.setter
     def fit_ROI_results(self, lmfit_minnimizer_result: minnimizer_result):
         self._fit_ROI_results.append(lmfit_minnimizer_result)
+        return
+
+    @property
+    def constant_fit_results(self):
+        """
+        This property is a list of length len(self.cr.binding.values) and contains all minimizer results (see lmfit
+         minimize docs) from fit.
+        """
+        if not self._constant_fit_results:
+            print('Need to run fit_ROI method  with bootstrap True on your MDC extension of xarray. If you think you '
+                  'have, for some reason this was not populated with your results of fits...?')
+            return
+        return self._constant_fit_results
+
+    @constant_fit_results.setter
+    def constant_fit_results(self, lmfit_minnimizer_result: minnimizer_result):
+        self._constant_fit_results.append(lmfit_minnimizer_result)
         return
 
     @property
@@ -1294,7 +1393,7 @@ class MDC(Core):
 
     def acquire_all_constants(self):
         """
-        Get all of the constants from fits. 
+        Get all of the constants from fits.
         """
         # Make sure fits exist; otherwise, no constants to extract from fits.
         if not self.fit_ROI_results:

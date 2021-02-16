@@ -103,7 +103,6 @@ class Arpes:
     # in be vs. k (This is slower)
     @requires_ef
     def spectra_k_irreg(self, phi0):
-        #TODO: Should take a theta coordinate. should be np.sqrt(KE)*cos(theta-theta0)*...
         KE, F = np.meshgrid(self._obj.arpes.energy, self._obj.arpes.slit, indexing='ij')
         kx = 0.512 * np.sqrt(KE) * np.sin(np.pi / 180 * (F - phi0))
         self._obj = self._obj.assign_coords(
