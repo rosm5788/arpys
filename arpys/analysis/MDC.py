@@ -3,7 +3,7 @@ from typing import List, Dict, Set, Tuple, NewType
 import xarray as xr
 import numpy as np
 from scipy.special import wofz
-from lmfit import minimize, Parameters
+from lmfit import minimize, Parameters, report_fit
 import re
 import copy
 
@@ -59,6 +59,7 @@ class MDC(Core):
 
         self._param_keys = []  # A list of parameter names populated after parameter names are confirmed correct.
         self._constants = []  # A list of fitted constants populated after fit.
+        self._constants_emcee = []
         """
         A list of the function names + label (str_key synonomous). For each, there should also be all associated params 
         to complete parameterization of function. i.e. Suppose user defined 'Voigt_1_center', then my code attempts to 
@@ -68,6 +69,8 @@ class MDC(Core):
         the model in less strings than all of the param names; so quicker loops.
         """
         self._function_key_labels = []
+        self._emcee_results = []
+        self._emcee_energies = []
 
         # Automatically set crop region to exclude area above Ef, since MDCs there should not be fit.
         self.cr_bounds = [np.amin(self._obj.kx.values), np.amax(self._obj.kx.values),
@@ -81,17 +84,23 @@ class MDC(Core):
         background peaks.
         """
         self._MDC_peaks = {}  # returns peak locations for each fit MDC populated by self.extract_peaks method
+        self._MDC_peaks_sigma = {}  # Estimated uncertainty of the peak location parameter, 1sigma.
+        self._MDC_peaks_emcee = {}
+        self._MDC_peaks_sigma_emcee = {}
 
         # returns dict[key] = numpy.poly1d that represents dispersion. These objects can be fed a k value, and will
         # spit out E(k).
         self._dispersion = {}
+        self._dispersion_emcee = {}
 
         # kf and vf will be populated when self.extract_dispersion is run, IF the crop region contains Ef or has an
         # upper bound that is within 100 meV of Ef.
         # returns dict[key] = nd.array of vf in units of [binding]/[kx]
         self._vf = {}
+        self._vf_emcee = {}
         # returns dict[key] = nd.array of kf in units of [kx]
         self._kf = {}
+        self._kf_emcee = {}
         return
 
     @staticmethod
@@ -156,11 +165,18 @@ class MDC(Core):
 
     def fit_MDC(self, MDC: List[float], eps: List[float] = None, function_key_labels: List[str] = None,
                 minimize_args: tuple = (), minimize_kwargs: dict = {}):
-        return minimize(self.residual, self.params, args=(self.cr.kx.values, MDC, eps, function_key_labels),
+        scalar_objective = False
+        for keys in minimize_kwargs.keys():
+            if keys == 'method':
+                if minimize_kwargs['method'] != 'emcee':
+                    scalar_objective = True
+        return minimize(self.residual, self.params,
+                        args=(self.cr.kx.values, MDC, eps, function_key_labels, scalar_objective),
                         *minimize_args, **minimize_kwargs)
 
     @staticmethod
-    def residual(params, kx, MDC: List[float] = None, eps: List[float] = None, function_key_labels: List[str] = None):
+    def residual(params, kx, MDC: List[float] = None, eps: List[float] = None, function_key_labels: List[str] = None,
+                 scalar_objective = False):
         """
         Return the residuals of the model (MDC-fit)*eps, if eps are supplied. If no MDC data is supplied, then
         just retun the fit. eps is the uncertainty on data, assumed 1 if not supplied.
@@ -276,13 +292,20 @@ class MDC(Core):
                             "pattern of 'Lorentzian' + str + (lower-case parameter: std or "
                             "amplitude).")
 
-        if MDC is None:
-            return fit
-        if eps is None:
-            return fit - MDC
-        return (fit - MDC)/eps
+        if scalar_objective:
+            if MDC is None:
+                return fit
+            if eps is None:
+                return np.sum(fit - MDC)
+            return np.sum((fit - MDC) / eps)
+        else:
+            if MDC is None:
+                return fit
+            if eps is None:
+                return fit - MDC
+            return (fit - MDC)/eps
 
-    def fit_ROI(self, bootstrap: bool = False, eps: List[float] = None, minimize_args: tuple = (),
+    def fit_ROI(self, invert_fit_direction: bool = False, eps: List[float] = None, minimize_args: tuple = (),
                 minimize_kwargs: dict = {}):
         """
         Main use of class: fit the preselected crop region's MDCs with a fit function.
@@ -304,7 +327,7 @@ class MDC(Core):
             try:
                 _ = self.check_params_labels(self._param_keys)  # check to see if the parameters have changed.
             except MDC_Fit_Parameter_Mislabel:  # If they have, this error will be thrown.
-                # So, empty and _param_keys and re-prepare them for the fit.
+                # So, empty _param_keys and re-prepare them for the fit.
                 self._param_keys = []
                 self.prepare_fit_params()
 
@@ -328,64 +351,21 @@ class MDC(Core):
         if self._kf:
             self._kf = {}
 
-        if bootstrap:
+
+        if invert_fit_direction:
+            fit_results = []
             if eps is None:
-                for E in self.cr.binding.values:
-                    self._bootstrap_fit_ensemble[E] = []
+                for E in np.flip(self.cr.binding.values):
                     # Grab every MDC in the image.
                     data = self.cr.sel(binding=E).values
                     # Fit every MDC:
-                    # store the initial guesses and bounds for the amplitudes and constants. Then fit an unbounded
-                    # constant to the data, which will serve as a baseline fit.
-                    p0 = {}
-                    constant_bounds = []
-                    switch= False
-                    for keys in self._function_key_labels:
-                        if keys == 'DC_offset' or keys == 'Constant' or keys == 'constant' or keys == 'Offset' or \
-                                keys == 'offset' or keys == 'DC_Offset':
-                            p0[keys] = self.params[keys].value
-                            constant_bounds[0] = self.params[keys].min
-                            constant_bounds[1] = self.params[keys].max
-                            self.params[keys].min = -np.inf
-                            self.params[keys].max = np.inf
-                            switch = True
-                        else:
-                            p0[keys+'amplitude'] = self.params[keys + 'amplitude'].value
-                            self.params[keys+'amplitude'].vary = False
-                            self.params[keys + 'amplitude'].value = 0
-                    # If constant a part of data, fit unconstrained constant to serve as baseline for chi_2 threshold
-                    # else no baseline.
-                    if not switch:
-                        print("No constant in your model, currently set chi_2 threshold to infinity, no baseline to "
-                              "compare to.")
-                        chi_2_threshold = np.inf
-                    else:
-                        self.constant_fit_results = self.fit_MDC(data, function_key_labels=self._function_key_labels,
-                                                                 minimize_args=minimize_args,
-                                                                 minimize_kwargs=minimize_kwargs)
-                        chi_2_threshold = self.constant_fit_results[-1].chisqr
-                    # Restore initial bounds and guesses before running true fits.
-                    for keys in self._function_key_labels:
-                        if keys == 'DC_offset' or keys == 'Constant' or keys == 'constant' or keys == 'Offset' or \
-                                keys == 'offset' or keys == 'DC_Offset':
-                            self.params[keys].value = p0[keys]
-                            self.params[keys].min = constant_bounds[0]
-                            self.params[keys].max = constant_bounds[1]
-                        else:
-                            self.params[keys+'amplitude'].vary = True
-                            self.params[keys + 'amplitude'].value = p0[keys+'amplitude']
-                    # Initial fit you would have gotten if not for the bootstrap:
-                    self._bootstrap_fit_ensemble[E].append(self.fit_MDC(data,
-                                                                        function_key_labels=self._function_key_labels,
-                                                                        minimize_args=minimize_args,
-                                                                        minimize_kwargs=minimize_kwargs))
-                    converge = False
-                    while not converge:
-                        pass
-
-
+                    fit_results.append(self.fit_MDC(data, function_key_labels=self._function_key_labels,
+                                                        minimize_args=minimize_args,
+                                                        minimize_kwargs=minimize_kwargs))
                     if self._previous_fit_as_guess_next_fit:
-                        self.previous_fit_as_guess_next_fit()
+                        parvals = self.params.valuesdict()
+                        for keys in parvals:
+                            self.params[keys].value = fit_results[-1].params[keys].value
             else:
                 if eps.shape != self.cr.values.shape:
                     raise Exception('You need to specify an eps with a shape equal to the shape of the ROI/cr of your ARPES'
@@ -395,13 +375,17 @@ class MDC(Core):
                     # Grab every MDC in the image.
                     data = self.cr.sel(binding=E).values
                     # Fit every MDC with the appropriate eps.
-                    self.fit_ROI_results = self.fit_MDC(data, eps=eps[count, :],
+                    fit_results.append(self.fit_MDC(data, eps=eps[count, :],
                                                         function_key_labels=self._function_key_labels,
                                                         minimize_args=minimize_args,
-                                                        minimize_kwargs=minimize_kwargs)
+                                                        minimize_kwargs=minimize_kwargs))
                     count += 1
                     if self._previous_fit_as_guess_next_fit:
-                        self.previous_fit_as_guess_next_fit()
+                        parvals = self.params.valuesdict()
+                        for keys in parvals:
+                            self.params[keys].value = fit_results[-1].params[keys].value
+            fit_results.reverse() # Get it back into the standard order in which the rest of the code expects.
+            self._fit_ROI_results = fit_results
         else:
             if eps is None:
                 for E in self.cr.binding.values:
@@ -431,6 +415,87 @@ class MDC(Core):
                         self.previous_fit_as_guess_next_fit()
         return
 
+    def emcee_fit_ROI(self, eps=None, index: int = None, emcee_args: tuple = (),
+                      emcee_kwargs: dict = {'nan_policy': 'omit', 'burn': 300, 'steps': 1000, 'thin': 20,
+                                            'is_weighted': False, 'progress': True}, default_bounds: bool = True):
+        if emcee_kwargs is self.emcee_fit_ROI.__defaults__[3]:
+            pass
+        else:
+            for key in self.emcee_fit_ROI.__defaults__[3]:
+                if key in emcee_kwargs:
+                    pass
+                else:
+                    # Make sure all remaining defaults are included unless specified by user.
+                    emcee_kwargs[key] = self.emcee_fit_ROI.__defaults__[3][key]
+
+        if self._emcee_results:
+            # If running this, then clear the results from previous results
+            self._emcee_results = []
+            self._emcee_energies = []
+
+        if default_bounds:
+            # store user set bounds and then make bounds infinite
+            low_bounds = []
+            up_bounds = []
+            for key in self.params.valuesdict().keys():
+                low_bounds.append(self.params[key].min)
+                up_bounds.append(self.params[key].max)
+                if 'center' in key:
+                    # Bound centers to domain of crop region.
+                    for j in range(len(self.fit_ROI_results)):
+                        self.fit_ROI_results[j].params[key].min = np.amin(self.cr.kx.values)
+                        self.fit_ROI_results[j].params[key].max = np.amax(self.cr.kx.values)
+                else:
+                    # Constrain all widths and amplitudes to be positive.
+                    for j in range(len(self.fit_ROI_results)):
+                        self.fit_ROI_results[j].params[key].min = 0
+                        self.fit_ROI_results[j].params[key].max = np.inf
+
+        if index is None:
+            j = 0
+            for E in self.cr.binding.values:
+                # Grab every MDC in the image.
+                data = self.cr.sel(binding=E).values
+                self._emcee_results.append(minimize(self.residual, *emcee_args,
+                                                    args=(self.cr.kx.values, data, eps, self._function_key_labels, False),
+                                                    method='emcee', params=self.fit_ROI_results[j].params, **emcee_kwargs))
+                j += 1
+        else:
+            E = self.cr.binding.values[index]
+            data = self.cr.sel(binding=E).values
+            self._emcee_results.append(minimize(self.residual, *emcee_args,
+                                                args=(self.cr.kx.values, data, eps, self._function_key_labels, False),
+                                                method='emcee', params=self.fit_ROI_results[index].params, **emcee_kwargs))
+            self._emcee_energies.append(E)
+        if default_bounds:
+            #restore user set bounds.
+            i = 0
+            for key in self.params.valuesdict().keys():
+                for j in range(len(self.fit_ROI_results)):
+                    self.fit_ROI_results[j].params[key].min = low_bounds[i]
+                    self.fit_ROI_results[j].params[key].max = up_bounds[i]
+                i += 1
+        return
+
+    def emcee_plot_acceptance(self, ax):
+        mean_acceptance = []
+        for minimizer_result in self.emcee_results:
+            ax.plot(minimizer_result.acceptance_fraction)
+            mean_acceptance.append(np.mean(minimizer_result.acceptance_fraction))
+        ax.set_xlabel('walker')
+        ax.set_ylabel('acceptance fraction')
+        print(mean_acceptance)
+        return
+
+    def emcee_visualize_posterior(self, index=0):
+        import corner
+        emcee_plot = corner.corner(self.emcee_results[index].flatchain, labels=self.emcee_results[index].var_names,
+                                   truths=list(self.emcee_results[index].params.valuesdict().values()))
+        print('median of posterior probability distribution')
+        print('--------------------------------------------')
+        report_fit(self.emcee_results[index].params)
+        return
+
     def previous_fit_as_guess_next_fit(self):
         # Set the starting value for fitting the next MDC as the results of the previous fitted MDC.
         parvals = self.params.valuesdict()
@@ -454,6 +519,14 @@ class MDC(Core):
     def fit_ROI_results(self, lmfit_minnimizer_result: minnimizer_result):
         self._fit_ROI_results.append(lmfit_minnimizer_result)
         return
+
+    @property
+    def emcee_results(self):
+        if self._emcee_results:
+            return self._emcee_results
+        else:
+            print("Run emcee_fit_ROI to populated self._emcee_results")
+            return
 
     @property
     def constant_fit_results(self):
@@ -751,15 +824,16 @@ class MDC(Core):
         Reset the ...MDC.params to a blank Paramaters() object of lmfit.
         """
         self.params = Parameters()
+        self._param_keys = []
         return
 
-    def waterfall(self, ax, plot_MDC: bool = True, tot_fits: bool = True, individual_fits: bool = False,
+    def waterfall(self, ax, plot_MDC: bool = True, plot_emcee: bool = True, tot_fits: bool = True, individual_fits: bool = False,
                   remove_constant: bool = True, only_one: int = None, offset: float = 1, dE: float = 0.05,
                   plot_single_fit_function: str = False, MDC_args: tuple = ('b--'),
                   MDC_kwargs: dict = {}, tot_fit_args: tuple = ('r'),  tot_fit_kwargs: dict = {},
                   individual_fits_args: tuple or List[tuple] = ('k'),
                   individual_fits_kwargs: dict or List[dict] = {}, single_fit_function_args: tuple = ('g'),
-                  single_fit_function_kwargs: dict = {}):
+                  single_fit_function_kwargs: dict = {}, emceee_fit_args: tuple = ('y'), emcee_fit_kwargs: dict = {}):
         """
         plot a waterfall of MDCs, total fit, and individual functions of the fit on axis, ax.
         inputs:
@@ -800,6 +874,8 @@ class MDC(Core):
         """
         if remove_constant:
             self.acquire_all_constants()
+            if plot_emcee and self.emcee_results:
+                self.acquire_all_constants_emcee()
 
         if isinstance(only_one, int):
             index = only_one
@@ -811,6 +887,28 @@ class MDC(Core):
                 else:
                     ax.plot(self.cr.kx.values, (self.cr.isel(binding=index).values + index * offset), *MDC_args,
                             **MDC_kwargs)
+            if plot_emcee and self.emcee_results:
+                if self._emcee_energies:
+                    if remove_constant:
+                        ax.plot(self.cr.kx.values,
+                                (self.residual(self.emcee_results.params, self.cr.kx.values) + index * offset
+                                 - self.constants_emcee),
+                                *emceee_fit_args, **emcee_fit_kwargs)
+                    else:
+                        ax.plot(self.cr.kx.values,
+                                (self.residual(self.emcee_results.params, self.cr.kx.values) + index * offset),
+                                *emceee_fit_args, **emcee_fit_kwargs)
+                else:
+                    if remove_constant:
+                        ax.plot(self.cr.kx.values,
+                                (self.residual(self.emcee_results[index].params, self.cr.kx.values) + index * offset
+                                 - self.constants_emcee[index]),
+                                *emceee_fit_args, **emcee_fit_kwargs)
+                    else:
+                        ax.plot(self.cr.kx.values,
+                                (self.residual(self.emcee_results[index].params, self.cr.kx.values) + index * offset),
+                                *emceee_fit_args, **emcee_fit_kwargs)
+
             if tot_fits:
                 if remove_constant:
                     ax.plot(self.cr.kx.values,
@@ -893,6 +991,28 @@ class MDC(Core):
                         ax.plot(self.cr.kx.values,
                                 (self.cr.isel(binding=index).values + count * offset),
                                 *MDC_args, **MDC_kwargs)
+                if plot_emcee and self.emcee_results:
+                    if self._emcee_energies:
+                        if remove_constant:
+                            ax.plot(self.cr.kx.values,
+                                    (self.residual(self.emcee_results.params, self.cr.kx.values) + count * offset
+                                     - self.constants_emcee),
+                                    *emceee_fit_args, **emcee_fit_kwargs)
+                        else:
+                            ax.plot(self.cr.kx.values,
+                                    (self.residual(self.emcee_results.params, self.cr.kx.values) + count * offset),
+                                    *emceee_fit_args, **emcee_fit_kwargs)
+                    else:
+                        if remove_constant:
+                            ax.plot(self.cr.kx.values,
+                                    (self.residual(self.emcee_results[index].params, self.cr.kx.values) + count * offset
+                                     - self.constants_emcee[index]),
+                                    *emceee_fit_args, **emcee_fit_kwargs)
+                        else:
+                            ax.plot(self.cr.kx.values,
+                                    (self.residual(self.emcee_results[index].params,
+                                                   self.cr.kx.values) + count * offset),
+                                    *emceee_fit_args, **emcee_fit_kwargs)
                 if tot_fits:
                     if remove_constant:
                         ax.plot(self.cr.kx.values,
@@ -962,6 +1082,28 @@ class MDC(Core):
                     else:
                         ax.plot(self.cr.kx.values, (self.cr.isel(binding=index).values+index*offset), *MDC_args,
                                 **MDC_kwargs)
+                if plot_emcee and self.emcee_results:
+                    if self._emcee_energies:
+                        if remove_constant:
+                            ax.plot(self.cr.kx.values,
+                                    (self.residual(self.emcee_results.params, self.cr.kx.values) + index * offset
+                                     - self.constants_emcee),
+                                    *emceee_fit_args, **emcee_fit_kwargs)
+                        else:
+                            ax.plot(self.cr.kx.values,
+                                    (self.residual(self.emcee_results.params, self.cr.kx.values) + index * offset),
+                                    *emceee_fit_args, **emcee_fit_kwargs)
+                    else:
+                        if remove_constant:
+                            ax.plot(self.cr.kx.values,
+                                    (self.residual(self.emcee_results[index].params, self.cr.kx.values) + index * offset
+                                     - self.constants_emcee[index]),
+                                    *emceee_fit_args, **emcee_fit_kwargs)
+                        else:
+                            ax.plot(self.cr.kx.values,
+                                    (self.residual(self.emcee_results[index].params,
+                                                   self.cr.kx.values) + index * offset),
+                                    *emceee_fit_args, **emcee_fit_kwargs)
                 if tot_fits:
                     if remove_constant:
                         ax.plot(self.cr.kx.values,
@@ -1030,12 +1172,15 @@ class MDC(Core):
         ax.set_yticklabels(y_labels)
         return
 
-    def plot_arpes_image(self, ax, plot_data: bool = True, plot_peaks: bool = True, plot_dispersion: bool = True,
+    def plot_arpes_image(self, ax, plot_data: bool = True, plot_peaks: bool = True, plot_emcee: bool = True,
+                         plot_dispersion: bool = True, plot_dispersion_emcee: bool = True,
                          plot_crop_region_bounds: bool = True, pad_k_dispersion: float = 0,
                          plot_peaks_args: tuple = ('x'),
                          plot_dispersion_args: tuple = ('r'), plot_crop_region_bounds_args: tuple = ('w'),
                          plot_peaks_kwargs: dict = {}, plot_dispersion_kwargs: dict = {},
-                         plot_crop_region_bounds_kwargs: dict = {}):
+                         plot_crop_region_bounds_kwargs: dict = {}, plot_peaks_emcee_args: tuple = ('o'),
+                         plot_peaks_emcee_kwargs: dict = {}, plot_dispersion_emcee_args: tuple = ('k'),
+                         plot_dispersion_emcee_kwargs: dict = {}):
         """
         plot E-k ARPES image, peak locations, and fitted dispersion.
         inputs:
@@ -1059,6 +1204,32 @@ class MDC(Core):
                 self.extract_peaks()
             for key in self.MDC_peaks.keys():
                 ax.plot(self.MDC_peaks[key], self.cr.binding.values, *plot_peaks_args, **plot_peaks_kwargs)
+        if plot_emcee and self.emcee_results:
+            if not self.MDC_peaks_emcee:
+                self.extract_peaks_emcee()
+            for key in self.MDC_peaks_emcee.keys():
+                if not self._emcee_energies:
+                    ax.plot(self.MDC_peaks_emcee[key], self.cr.binding.values, *plot_peaks_emcee_args,
+                            **plot_peaks_emcee_kwargs)
+                else:
+                    ax.plot(self.MDC_peaks_emcee[key], self._emcee_energies, *plot_peaks_emcee_args,
+                            **plot_peaks_emcee_kwargs)
+
+        if plot_dispersion_emcee and self.emcee_results and not self._emcee_energies:
+            if not self.dispersion_emcee:
+                self.extract_dispersion_emcee()
+            if self.dispersion_emcee[key].variable == 'kx':
+                k_min = np.amin(self.MDC_peaks_emcee[key]) - pad_k_dispersion
+                k_max = np.amax(self.MDC_peaks_emcee[key]) + pad_k_dispersion
+                k = np.arange(k_min, k_max,
+                              step=(self.cr.kx.values[1] - self.cr.kx.values[0]))
+                ax.plot(k, self.dispersion_emcee[key](k), *plot_dispersion_emcee_args, **plot_dispersion_emcee_kwargs)
+            else:
+                E_min = np.amin(self.cr.binding.values) - pad_k_dispersion
+                E_max = np.amax(self.cr.binding.values) + pad_k_dispersion
+                E = np.arange(E_min, E_max, self.cr.binding.values[1] - self.cr.binding.values[0])
+                ax.plot(self.dispersion_emcee[key](E), E, *plot_dispersion_emcee_args, **plot_dispersion_emcee_kwargs)
+
         if plot_dispersion:
             if not self.dispersion:
                 self.extract_dispersion()
@@ -1074,6 +1245,8 @@ class MDC(Core):
                     E_max = np.amax(self.cr.binding.values) + pad_k_dispersion
                     E = np.arange(E_min, E_max, self.cr.binding.values[1] - self.cr.binding.values[0])
                     ax.plot(self.dispersion[key](E), E, *plot_dispersion_args, **plot_dispersion_kwargs)
+
+
         if plot_crop_region_bounds:
             ax.plot([self.cr_bounds[0], self.cr_bounds[1], self.cr_bounds[1], self.cr_bounds[0], self.cr_bounds[0]],
                     [self.cr_bounds[2], self.cr_bounds[2], self.cr_bounds[3], self.cr_bounds[3], self.cr_bounds[2]],
@@ -1089,26 +1262,221 @@ class MDC(Core):
         """
         return self._MDC_peaks
 
-    def extract_peaks(self):
+    @property
+    def MDC_peaks_emcee(self):
+        return self._MDC_peaks_emcee
+
+    def extract_peaks_emcee(self):
         """
         extract the centers of Gaussians, Voigts, and Lorentzians that are not labeled with  bg, background
         """
-        # Want to use self._function_key_labels; so better not be empty, and should be populated during fit anyway.
+
         if self._function_key_labels:
             for key in self._function_key_labels:
                 if not key == self._constant_key:
                     if 'bg' not in key and 'background' not in key and 'back_ground' not in key and \
                             'BG' not in key and 'BackGround' not in key:
                         peaks = []
+                        sigma = []
                         for j in range(len(self.fit_ROI_results)):
-                            peaks.append(self.fit_ROI_results[j].params[key+'center'].value)
-                        self._MDC_peaks[key] = np.asarray(peaks)
+                            peaks.append(self.emcee_results[j].params[key+'center'].value)
+                            sigma.append(self.emcee_results[j].params[key+'center'].stderr)
+                        self._MDC_peaks_emcee[key] = np.asarray(peaks)
+                        self._MDC_peaks_sigma_emcee[key] = np.asarray(sigma)
         else:
             raise Exception("_function_key_labels empty. Did not think this was possible, unless you have not run"
                             "xarray.MDC.fit_ROI()")
         return
 
-    def extract_dispersion(self, force_E_dependent = False, **kwargs):
+    def extract_peaks(self):
+        """
+        extract the centers of Gaussians, Voigts, and Lorentzians that are not labeled with  bg, background
+        """
+        get_errors = False
+        for j in range(len(self.fit_ROI_results)):
+            if self._fit_ROI_results[j].errorbars:
+                get_errors = True
+                break
+
+        # Were there any errors reported for fit params?
+        if get_errors:
+            # Want to use self._function_key_labels; so better not be empty, and should be populated during fit anyway.
+            if self._function_key_labels:
+                for key in self._function_key_labels:
+                    if not key == self._constant_key:
+                        if 'bg' not in key and 'background' not in key and 'back_ground' not in key and \
+                                'BG' not in key and 'BackGround' not in key:
+                            peaks = []
+                            sigma = []
+                            warning = False
+                            for j in range(len(self.fit_ROI_results)):
+                                peaks.append(self.fit_ROI_results[j].params[key+'center'].value)
+                                if self.fit_ROI_results[j].params[key+'center'].stderr is not None:
+                                    sigma.append(self.fit_ROI_results[j].params[key+'center'].stderr)
+                                else:
+                                    warning = True
+                                    sigma.append(self.fit_ROI_results[j].params[key + 'center'].stderr)
+                                    # In this case sigma cannot be estimated, which means max of sigma is a bad guess,
+                                    # but for now
+                            if warning:
+                                # Set all Nones to max errors of estimated errors, then warn user.
+                                max_estimated_error = np.nanmax(np.asarray(sigma, dtype=np.float64))
+                                for j in range(len(self.fit_ROI_results)):
+                                    if self.fit_ROI_results[j].params[key + 'center'].stderr is None:
+                                        sigma[j] = max_estimated_error
+                                print("Warning the standard error of some of your peak locations cannot be estimated; "
+                                      "so I set them to the max error estimated to that point, a bad estimate. "
+                                      "Do not trust the standard error on kf and vf.")
+                            self._MDC_peaks[key] = np.asarray(peaks)
+                            self._MDC_peaks_sigma[key] = np.asarray(sigma)
+            else:
+                raise Exception("_function_key_labels empty. Did not think this was possible, unless you have not run"
+                                "xarray.MDC.fit_ROI()")
+        else:
+            # Want to use self._function_key_labels; so better not be empty, and should be populated during fit anyway.
+            if self._function_key_labels:
+                for key in self._function_key_labels:
+                    if not key == self._constant_key:
+                        if 'bg' not in key and 'background' not in key and 'back_ground' not in key and \
+                                'BG' not in key and 'BackGround' not in key:
+                            peaks = []
+                            for j in range(len(self.fit_ROI_results)):
+                                peaks.append(self.fit_ROI_results[j].params[key+'center'].value)
+                            self._MDC_peaks[key] = np.asarray(peaks)
+            else:
+                raise Exception("_function_key_labels empty. Did not think this was possible, unless you have not run"
+                                "xarray.MDC.fit_ROI()")
+        return
+
+    def extract_dispersion_emcee(self, force_E_dependent: bool = False, **kwargs):
+        """
+        Get the dispersion, E(k), where E(k) is a fited polynomial. pass deg=int to control order of poly
+        inputs:
+            kwargs are key word args for np.polyfit, see their documentation.
+        """
+        if self._emcee_energies:
+            print("Trying to extract dispersion from emcee results, but you only ran emcee on one energy. How can "
+                  "I fit a polynomial and extract a dispersion from one point? abort.")
+            return
+
+        # If you are extracting dispersion, reset all populated dicts to empty
+        if self._dispersion_emcee:
+            self._dispersion_emcee = {}
+        if self._kf_emcee:
+            self._kf_emcee = {}
+        if self._vf_emcee:
+            self._vf_emcee = {}
+
+        # Make sure a deg for the polynomial is specified.
+        try:
+            _ = kwargs['deg']
+        except KeyError:
+            print('fitting a linear polynomial to your dispersion.')
+            kwargs = {'deg': 1}
+
+        # Must have MDC_peaks to extract dispersion, get them.
+        if not self._MDC_peaks_emcee:
+            self.extract_peaks_emcee()
+
+        # Loop over the keys of MDC_peaks, which should be all function labels that contain center parameters, no bg
+        Energies = self.cr.binding.values  # Same energies for all fits.
+        for key in self.MDC_peaks_emcee.keys():
+            k = self.MDC_peaks_emcee[key]
+            # Turns out the polyfits are better, if domain is variable with larger variance...
+            if Energies.std() > k.std() and not force_E_dependent:
+                # In this case, E will be the domain, and we will find k(E)
+                x = Energies
+                y = k
+                E_independent = True
+            else:
+                # In this case, k will be the domain, and we will find E(k)
+                x = k
+                y = Energies
+                E_independent = False
+            cov = None
+            if E_independent:
+                coefs, cov = np.polyfit(x, y, w=1/self._MDC_peaks_sigma_emcee[key], cov=True, **kwargs)
+            else:
+                coefs = np.polyfit(x, y, **kwargs)  # returns coefficients of poly fit
+
+            # Dict: keys function labels, returns 1dpoly interpolation object. get E_{key}(k) = self.dispersion[key](k)
+            # If variable is 'kx', but if it is binding get k_{key}(binding) = self.dispersion[key](binding)
+            # Check what the independent variable is with self.dispersion[key].variable
+            if E_independent:
+                self._dispersion_emcee[key] = np.poly1d(coefs, variable='binding')
+            else:
+                self._dispersion_emcee[key] = np.poly1d(coefs, variable='kx')
+
+            # Get vf if appropriate; so I need kf if the band crosses Ef.
+            # If Ef is not within fitting window or within 100 meV of upper bound of fitting window, don't get vf or kf.
+            if self.cr_bounds[2] < 0.0 < self.cr_bounds[3] + 0.1:
+                # New set of peaks, reset parameters to extract:
+                d_coefs = []
+                all_kf = []
+                all_vf = []
+                if not E_independent:
+                    roots = np.roots(coefs)  # Get roots of E(k), since Ef=0
+                    realroots = [n for n in roots if isinstance(n, float)]  # keep only real roots.
+                    count = 0
+                    for root in realroots:
+                        if np.amax(x) > root > np.amin(x):
+                            kf = root  # E is in binding; sp of root is real and within domain of the fit, it is kf.
+                            count += 1  # Number of viable kfs found, expect to be only 1.
+                            if not d_coefs:
+                                N = kwargs['deg']
+                                for j in range(N):
+                                    d_coefs.append((N - j) * coefs[j])
+                            vf = np.poly1d(d_coefs)(kf)  # vf is, of course, the derivative of E(k) at kf.
+                            all_kf.append(kf)
+                            all_vf.append(vf)
+                        elif self.cr_bounds[0] < root < self.cr_bounds[1]:
+                            print('Be advised for function_key: ', key, ' found kf outside of range min(MDC_peaks)'
+                                                                        'to max(MDC_peaks), which is domain of polyfit; '
+                                                                        'however, I did find a kf within your cr_bounds'
+                                                                        ' over which MDCs were fit; so I will find vf and '
+                                                                        'store vf and kf for this point, but this may be'
+                                                                        'misleading, use discretion.')
+                            kf = root  # E is in binding; sp of root is real and within domain of the fit, it is kf.
+                            count += 1  # Number of viable kfs found, expect to be only 1.
+                            if not d_coefs:
+                                N = kwargs['deg']
+                                for j in range(N):
+                                    d_coefs.append((N-j)*coefs[j])
+                            vf = np.poly1d(d_coefs)(kf)  # vf is, of course, the derivative of E(k) at kf.
+                            all_kf.append(kf)
+                            all_vf.append(vf)
+                    # Store the kf and vf pairs we found.
+                    self._vf_emcee[key] = np.asarray(all_vf)
+                    self._kf_emcee[key] = np.asarray(all_kf)
+                    if count > 1:
+                        print("Be advised: found more than 1 kf, meaning polynomial fit crosses Ef more than once within"
+                              "the domain of the fit of the polynomial to (centers, binding), for this function_key_label",
+                              key)
+                else:
+                    if np.amax(y) > np.poly1d(coefs)(0) > np.amin(y):  # is k(E=0) within k's of fit?
+                        pass
+                    elif self.cr_bounds[0] < np.poly1d(coefs)(0) < self.cr_bounds[1]:
+                        print('Be advised for function_key: ', key, ' found kf outside of range min(MDC_peaks)'
+                                                                    'to max(MDC_peaks), which is domain of polyfit; '
+                                                                    'however, I did find a kf within your cr_bounds'
+                                                                    ' over which MDCs were fit; so I will find vf and '
+                                                                    'store vf and kf for this point, but this may be'
+                                                                    'misleading, use discretion.')
+                    kf = coefs[-1]  # k(E=0) is kf and there can only be one, because k(E) is a function.
+                    vf = 1 / coefs[-2]  # at E=0 only the linear coefficient contributes to vf.
+                    if cov is not None:
+                        kf_sigma = np.sqrt(cov[-1, -1])
+                        vf_sigma = np.abs(np.square(vf) * np.sqrt(cov[-2, -2]))
+                        # Store the kf and vf pairs we found.
+                        self._vf_emcee[key] = np.array([vf, vf_sigma])
+                        self._kf_emcee[key] = np.array([kf, kf_sigma])
+                    else:
+                        # Store the kf and vf pairs we found.
+                        self._vf_emcee[key] = np.asarray(vf)
+                        self._kf_emcee[key] = np.asarray(kf)
+        return
+
+    def extract_dispersion(self, force_E_dependent: bool = False, **kwargs):
         """
         Get the dispersion, E(k), where E(k) is a fited polynomial. pass deg=int to control order of poly
         inputs:
@@ -1117,15 +1485,16 @@ class MDC(Core):
         # If you are extracting dispersion, reset all populated dicts to empty
         if self._dispersion:
             self._dispersion = {}
-        if self.kf:
+        if self._kf:
             self._kf = {}
-        if self.vf:
-            self._kf = {}
+        if self._vf:
+            self._vf = {}
 
         # Make sure a deg for the polynomial is specified.
         try:
             _ = kwargs['deg']
         except KeyError:
+            print('fitting a linear polynomial to your dispersion.')
             kwargs = {'deg': 1}
 
         # Must have MDC_peaks to extract dispersion, get them.
@@ -1147,7 +1516,11 @@ class MDC(Core):
                 x = k
                 y = Energies
                 E_independent = False
-            coefs = np.polyfit(x, y, **kwargs)  # returns coefficients of poly fit
+            cov = None
+            if self._MDC_peaks_sigma and E_independent:
+                coefs, cov = np.polyfit(x, y, w=1/self._MDC_peaks_sigma[key], cov=True, **kwargs)
+            else:
+                coefs = np.polyfit(x, y, **kwargs)  # returns coefficients of poly fit
 
             # Dict: keys function labels, returns 1dpoly interpolation object. get E_{key}(k) = self.dispersion[key](k)
             # If variable is 'kx', but if it is binding get k_{key}(binding) = self.dispersion[key](binding)
@@ -1204,14 +1577,7 @@ class MDC(Core):
                               key)
                 else:
                     if np.amax(y) > np.poly1d(coefs)(0) > np.amin(y):  # is k(E=0) within k's of fit?
-                        kf = np.poly1d(coefs)(0)  # k(E=0) is kf and there can only be one, because k(E) is a function.
-                        if not d_coefs:
-                            N = kwargs['deg']
-                            for j in range(N):
-                                d_coefs.append((N - j) * coefs[j])
-                        vf = 1/np.poly1d(d_coefs)(kf)  # vf is, of course, the derivative of E(k) at kf. or (dk/dE)^-1
-                        all_kf.append(kf)
-                        all_vf.append(vf)
+                        pass
                     elif self.cr_bounds[0] < np.poly1d(coefs)(0) < self.cr_bounds[1]:
                         print('Be advised for function_key: ', key, ' found kf outside of range min(MDC_peaks)'
                                                                     'to max(MDC_peaks), which is domain of polyfit; '
@@ -1219,17 +1585,18 @@ class MDC(Core):
                                                                     ' over which MDCs were fit; so I will find vf and '
                                                                     'store vf and kf for this point, but this may be'
                                                                     'misleading, use discretion.')
-                        kf = np.poly1d(coefs)(0)  # k(E=0) is kf and there can only be one, because k(E) is a function.
-                        if not d_coefs:
-                            N = kwargs['deg']
-                            for j in range(N):
-                                d_coefs.append((N-j)*coefs[j])
-                        vf = 1/np.poly1d(d_coefs)(kf)  # vf is, of course, the derivative of E(k) at kf. or (dk/dE)^-1
-                        all_kf.append(kf)
-                        all_vf.append(vf)
-                    # Store the kf and vf pairs we found.
-                    self._vf[key] = np.asarray(all_vf)
-                    self._kf[key] = np.asarray(all_kf)
+                    kf = coefs[-1]  # k(E=0) is kf and there can only be one, because k(E) is a function.
+                    vf = 1 / coefs[-2]  # at E=0 only the linear coefficient contributes to vf.
+                    if cov is not None:
+                        kf_sigma = np.sqrt(cov[-1, -1])
+                        vf_sigma = np.abs(np.square(vf) * np.sqrt(cov[-2, -2]))
+                        # Store the kf and vf pairs we found.
+                        self._vf[key] = np.array([vf, vf_sigma])
+                        self._kf[key] = np.array([kf, kf_sigma])
+                    else:
+                        # Store the kf and vf pairs we found.
+                        self._vf[key] = np.asarray(vf)
+                        self._kf[key] = np.asarray(kf)
         return
 
     @property
@@ -1249,6 +1616,24 @@ class MDC(Core):
         if not self._dispersion:  # If still empty, extract it.
             self.extract_dispersion()
         return self._dispersion
+
+    @property
+    def dispersion_emcee(self):
+        """
+        dict with keys that are functions + str_key assigned by user, similar to
+        self._function_key_labels; however, does not have keys for constants and also neglect
+        functions with str_key = 'bg', 'back_ground' ... (see self.extract_peaks method for if statement that explicitly
+        shows which str_key labels are neglected). These are neglected because we do not want dispersion of
+        background peaks.
+        self.dispersion[key].variable tells you whether E or k are independent
+                            variable.
+
+        return: dict[key] = numpy.poly1d that represents dispersion. These objects can be fed a k [E] value, and will
+                            spit out E(k) [k(E)].
+        """
+        if not self._dispersion_emcee:  # If still empty, extract it.
+            self.extract_dispersion_emcee()
+        return self._dispersion_emcee
 
     @staticmethod
     def individual_fits(params: minnimizer_result, kx, function_key_labels: List[str] = None):
@@ -1348,6 +1733,38 @@ class MDC(Core):
         return fit
 
     @property
+    def vf_emcee(self):
+        """
+        dict with keys that are functions + str_key assigned by user, similar to
+        self._function_key_labels; however, does not have keys for constants and also neglect
+        functions with str_key = 'bg', 'back_ground' ... (see self.extract_peaks method for if statement that explicitly
+        shows which str_key labels are neglected). These are neglected because we do not want dispersion of
+        background peaks.
+
+        return: dict[key] = nd.array of vf in units of [binding]/[kx]
+        """
+        if not self._vf_emcee:
+            print('Be advised: vf is empty, which could mean you need to extract_dispersion, or maybe your crop region'
+                  'does not contain Ef within 100 meV of upper bound, if so I will not automatically extract vf.')
+        return self._vf_emcee
+
+    @property
+    def kf_emcee(self):
+        """
+        dict with keys that are functions + str_key assigned by user, similar to
+        self._function_key_labels; however, does not have keys for constants and also neglect
+        functions with str_key = 'bg', 'back_ground' ... (see self.extract_peaks method for if statement that explicitly
+        shows which str_key labels are neglected). These are neglected because we do not want dispersion of
+        background peaks.
+
+        return: dict[key] = nd.array of kf in units of [kx]
+        """
+        if not self._kf_emcee:
+            print('Be advised: kf is empty, which could mean you need to extract_dispersion, or maybe your crop region'
+                  'does not contain Ef within 100 meV of upper bound, if so I will not automatically extract kf.')
+        return self._kf_emcee
+
+    @property
     def vf(self):
         """
         dict with keys that are functions + str_key assigned by user, similar to
@@ -1391,6 +1808,10 @@ class MDC(Core):
         self._constants.append(value)
         return
 
+    @property
+    def constants_emcee(self):
+        return self._constants_emcee
+
     def acquire_all_constants(self):
         """
         Get all of the constants from fits.
@@ -1416,3 +1837,64 @@ class MDC(Core):
         for index in range(len(self.fit_ROI_results)):
             self.constants = self.fit_ROI_results[index].params.valuesdict()[self._constant_key]
         return
+
+    def acquire_all_constants_emcee(self):
+        """
+        Get all of the constants from fits.
+        """
+        # Make sure fits exist; otherwise, no constants to extract from fits.
+        if not self.emcee_results:
+            raise Exception("Cannot get constants of the emcee if no emcee have been run.")
+
+        # Check that the model contains one constant:
+        check = 0
+        for keys in self.params.valuesdict():
+            if keys == 'DC_offset' or keys == 'Constant' or keys == 'constant' or keys == 'Offset' or \
+                    keys == 'offset' or keys == 'DC_Offset':
+                check += 1
+        if check == 0:
+            raise Exception("Your model does not contain a constant, yet you are trying to extract the constants of "
+                            "the fits?")
+        elif check > 1:
+            raise Exception("Your model has more than 1 constant. Why? I assume you either use 1 or no constants. "
+                            "Afterall, constant1+constant2+... is still a constant.")
+
+        # Now go find the constants and add them to self.constants
+        for index in range(len(self.emcee_results)):
+            self._constants_emcee.append(self.emcee_results[index].params.valuesdict()[self._constant_key])
+        return
+
+    def update_bounds(self, low_bounds: float or dict = None, up_bounds: float or dict = None, key: str = None):
+        """
+        low and up _bounds are either a dict with keys corresponding to param names, which you want to update the bounds
+        for to the float given at the dict[key]. OR they are floats, and I want you to give me the key for the one
+        param you want to update.
+        """
+        if not self.fit_ROI_results:
+            raise Exception("update bounds is for updating the bounds of the fit results, but you have no fit results "
+                            "yet. If you want to update the bounds of self.params, do that manually.")
+        if isinstance(low_bounds, dict):
+            for keys in low_bounds.keys():
+                for j in range(len(self.fit_ROI_results)):
+                    self.fit_ROI_results[j].params[keys].min = low_bounds[keys]
+        if isinstance(up_bounds, dict):
+            # Good
+            for keys in up_bounds.keys():
+                for j in range(len(self.fit_ROI_results)):
+                    self.fit_ROI_results[j].params[keys].max = up_bounds[keys]
+
+        if key is not None:
+            if isinstance(low_bounds, float):
+                # Good.
+                for j in range(len(self.fit_ROI_results)):
+                    self.fit_ROI_results[j].params[key].min = low_bounds
+            if isinstance(up_bounds, float):
+                # Good.
+                for j in range(len(self.fit_ROI_results)):
+                    self.fit_ROI_results[j].params[key].max = up_bounds
+            else:
+                print("You specified a key, which should be a param name, and then you gave me a non-float for the up "
+                      "and/or low bound, which I wanted to be a float that would be applied to the param specified by"
+                      "key.")
+        return
+
