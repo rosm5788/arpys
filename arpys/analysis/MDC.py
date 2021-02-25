@@ -6,6 +6,7 @@ from scipy.special import wofz
 from lmfit import minimize, Parameters, report_fit
 import re
 import copy
+import math
 
 xarray = NewType('xarray', xr)
 minnimizer_result = NewType('minnimizer_result', object)
@@ -87,20 +88,28 @@ class MDC(Core):
         self._MDC_peaks_sigma = {}  # Estimated uncertainty of the peak location parameter, 1sigma.
         self._MDC_peaks_emcee = {}
         self._MDC_peaks_sigma_emcee = {}
+        self._MDC_energies = []
 
         # returns dict[key] = numpy.poly1d that represents dispersion. These objects can be fed a k value, and will
         # spit out E(k).
         self._dispersion = {}
         self._dispersion_emcee = {}
+        self._dispersion_cov = {}
+        self._dispersion_cov_emcee = {}
+        self._band_crossing = False
 
         # kf and vf will be populated when self.extract_dispersion is run, IF the crop region contains Ef or has an
         # upper bound that is within 100 meV of Ef.
         # returns dict[key] = nd.array of vf in units of [binding]/[kx]
         self._vf = {}
         self._vf_emcee = {}
+        self._vf_sigma = {}
+        self._vf_sigma_emcee = {}
         # returns dict[key] = nd.array of kf in units of [kx]
         self._kf = {}
         self._kf_emcee = {}
+        self._kf_sigma = {}
+        self._kf_sigma_emcee = {}
         return
 
     @staticmethod
@@ -192,6 +201,8 @@ class MDC(Core):
         that represent all of the functions comprising the fit. So, if you have a param 'Gaussian_center', then function
         key labels contains 'Gaussian_'.
         """
+        if MDC is not None:
+            MDC = np.asarray(MDC)
         parvals = params.valuesdict()
         fit = np.zeros(len(kx))
         if isinstance(function_key_labels, list) and function_key_labels:  # If I know these, build the model.
@@ -296,8 +307,8 @@ class MDC(Core):
             if MDC is None:
                 return fit
             if eps is None:
-                return np.sum(fit - MDC)
-            return np.sum((fit - MDC) / eps)
+                return np.sum(np.square(fit - MDC))
+            return np.sum(np.square((fit - MDC) / eps))
         else:
             if MDC is None:
                 return fit
@@ -355,7 +366,7 @@ class MDC(Core):
         if invert_fit_direction:
             fit_results = []
             if eps is None:
-                for E in np.flip(self.cr.binding.values):
+                for E in self.cr.binding.values:
                     # Grab every MDC in the image.
                     data = self.cr.sel(binding=E).values
                     # Fit every MDC:
@@ -432,6 +443,17 @@ class MDC(Core):
             # If running this, then clear the results from previous results
             self._emcee_results = []
             self._emcee_energies = []
+
+        if self._dispersion_emcee:
+            self._dispersion_emcee = {}
+        if self._kf_emcee:
+            self._kf_emcee = {}
+        if self._vf_emcee:
+            self._vf_emcee = {}
+        if self._MDC_peaks_emcee:
+            self._MDC_peaks_emcee = {}
+        if self._MDC_peaks_sigma_emcee:
+            self._MDC_peaks_sigma_emcee = {}
 
         if default_bounds:
             # store user set bounds and then make bounds infinite
@@ -552,11 +574,36 @@ class MDC(Core):
         """
         return self._fit_results_stored
 
-    @fit_results_stored.setter
-    def fit_results_stored(self, cr_bounds: List[float], fit_ROI_results: List[minnimizer_result]):
+    @property
+    def MDC_energies(self):
+        return self._MDC_energies
+
+    @MDC_energies.setter
+    def MDC_energies(self, energies: List[float]):
+        self._MDC_energies = energies
+        return
+
+    @property
+    def cr_bounds(self):
+        return self._cr_bounds
+
+    @cr_bounds.setter
+    def cr_bounds(self, crop_region: List[float]):
+        """
+        crop_region: list of 4 floats [k_min, k_max, E_min, E_max]
+        """
+        self._cr_bounds = crop_region
+        self.cr = self._cr_bounds
+        self.MDC_energies = self.cr.binding.values
+        return
+
+    def store_fit_results(self):
         # Probably does not work.
-        self._fit_results_stored['cr_bounds'].append(cr_bounds)
-        self._fit_results_stored['fit_ROI_results'].append(fit_ROI_results)
+        if not self.fit_ROI_results:
+            print("You are trying to store results, but you have none?")
+            return
+        self._fit_results_stored['cr_bounds'].append(copy.deepcopy(self.cr_bounds))
+        self._fit_results_stored['fit_ROI_results'].append(copy.deepcopy(self.fit_ROI_results))
         return
 
     def assign_default_bounds_Gaussian(self, label: str, Gaussian: str):
@@ -571,8 +618,8 @@ class MDC(Core):
         if self.params[Gaussian+label+'center'].max == np.inf:
             self.params[Gaussian + label + 'center'].max = np.amax(self.cr.kx.values)  # The maximum of the domain.
         # standard deviation must be >0
-        if self.params[Gaussian + label + 'std'].min == -np.inf:
-            self.params[Gaussian + label + 'std'].min = 0
+        if self.params[Gaussian + label + 'std'].min < 1e-15:
+            self.params[Gaussian + label + 'std'].min = 1e-15
         # Amplitude must be > 0
         if self.params[Gaussian + label + 'amplitude'].min == -np.inf:
             self.params[Gaussian + label + 'amplitude'].min = 0
@@ -611,11 +658,11 @@ class MDC(Core):
         if self.params[Voigt + label + 'center'].max == np.inf:
             self.params[Voigt + label + 'center'].max = np.amax(self.cr.kx.values)  # The maximum of the domain.
         # alpha is a width, which >0
-        if self.params[Voigt + label + 'alpha'].min == -np.inf:
-            self.params[Voigt + label + 'alpha'].min = 0
+        if self.params[Voigt + label + 'alpha'].min < 1e-15:
+            self.params[Voigt + label + 'alpha'].min = 1e-15
         # Gamma is FWHM of Gaussian >0
-        if self.params[Voigt + label + 'gamma'].min == -np.inf:
-            self.params[Voigt + label + 'gamma'].min = 0
+        if self.params[Voigt + label + 'gamma'].min < 1e-15:
+            self.params[Voigt + label + 'gamma'].min = 1e-15
         # Amplitude > 0
         if self.params[Voigt + label + 'amplitude'].min == -np.inf:
             self.params[Voigt + label + 'amplitude'].min = 0
@@ -684,8 +731,8 @@ class MDC(Core):
         if self.params[Lorentzian + label + 'center'].max == np.inf:
             self.params[Lorentzian + label + 'center'].max = np.amax(self.cr.kx.values)  # The maximum of the domain.
         # Gamma is FWHM of lorentzian >0
-        if self.params[Lorentzian + label + 'gamma'].min == -np.inf:
-            self.params[Lorentzian + label + 'gamma'].min = 0
+        if self.params[Lorentzian + label + 'gamma'].min < 1e-15:
+            self.params[Lorentzian + label + 'gamma'].min = 1e-15
         # Amplitude > 0
         if self.params[Lorentzian + label + 'amplitude'].min == -np.inf:
             self.params[Lorentzian + label + 'amplitude'].min = 0
@@ -791,6 +838,9 @@ class MDC(Core):
             for key in expected_params:
                 if key in param_names:
                     param_names.remove(key)
+            if len(param_names) == 1:
+                if 'k_0' in param_names[0] or 'middle' in param_names[0]:
+                    return param_names_clean
             raise MDC_Fit_Parameter_Mislabel('You have more parameters than I expected. And here are the names of '
                                              'parameters that did not match the correct labeling scheme or are extra:',
                                              param_names, 'Here is what I expected:', expected_params,
@@ -1026,9 +1076,15 @@ class MDC(Core):
                 if isinstance(plot_single_fit_function, str):
                     fits = self.individual_fits(self.fit_ROI_results[index].params, self.cr.kx.values)
                     try:
-                        ax.plot(self.cr.kx.values, (fits[plot_single_fit_function] + index * offset),
-                                *single_fit_function_args,
-                                **single_fit_function_kwargs)
+                        if remove_constant:
+                            ax.plot(self.cr.kx.values, (fits[plot_single_fit_function] + index * offset -
+                                                        self.constants[index]),
+                                    *single_fit_function_args,
+                                    **single_fit_function_kwargs)
+                        else:
+                            ax.plot(self.cr.kx.values, (fits[plot_single_fit_function] + index * offset),
+                                    *single_fit_function_args,
+                                    **single_fit_function_kwargs)
                     except KeyError:
                         raise KeyError('plot_single_fit_function needs to be one of the following:', fits.keys())
                 if individual_fits:
@@ -1197,6 +1253,12 @@ class MDC(Core):
         plot_peaks, plot_dispersion, and plot_crop_region_bounds + _kwargs is a dict of key word arguments passed to
             ax.plot() function from matplotlib. See their document for acceptable kwargs.
         """
+        if self._band_crossing:
+            # If you merge results from multiple crop regions, and there is a band crossing, then I do not want to plot
+            # dispersion which also extracts dispersion, which will not be sensical in case of band crossing.
+            plot_dispersion = False
+            plot_dispersion_emcee = False
+
         if plot_data:  # Then plot the image on ax.
             self._obj.plot(x='kx', y='binding', ax=ax)
         if plot_peaks:
@@ -1218,17 +1280,20 @@ class MDC(Core):
         if plot_dispersion_emcee and self.emcee_results and not self._emcee_energies:
             if not self.dispersion_emcee:
                 self.extract_dispersion_emcee()
-            if self.dispersion_emcee[key].variable == 'kx':
-                k_min = np.amin(self.MDC_peaks_emcee[key]) - pad_k_dispersion
-                k_max = np.amax(self.MDC_peaks_emcee[key]) + pad_k_dispersion
-                k = np.arange(k_min, k_max,
-                              step=(self.cr.kx.values[1] - self.cr.kx.values[0]))
-                ax.plot(k, self.dispersion_emcee[key](k), *plot_dispersion_emcee_args, **plot_dispersion_emcee_kwargs)
-            else:
-                E_min = np.amin(self.cr.binding.values) - pad_k_dispersion
-                E_max = np.amax(self.cr.binding.values) + pad_k_dispersion
-                E = np.arange(E_min, E_max, self.cr.binding.values[1] - self.cr.binding.values[0])
-                ax.plot(self.dispersion_emcee[key](E), E, *plot_dispersion_emcee_args, **plot_dispersion_emcee_kwargs)
+            for key in self.dispersion_emcee.keys():
+                if self.dispersion_emcee[key].variable == 'kx':
+                    k_min = np.amin(self.MDC_peaks_emcee[key]) - pad_k_dispersion
+                    k_max = np.amax(self.MDC_peaks_emcee[key]) + pad_k_dispersion
+                    k = np.arange(k_min, k_max,
+                                  step=(self.cr.kx.values[1] - self.cr.kx.values[0]))
+                    ax.plot(k, self.dispersion_emcee[key](k), *plot_dispersion_emcee_args,
+                            **plot_dispersion_emcee_kwargs)
+                else:
+                    E_min = np.amin(self.cr.binding.values) - pad_k_dispersion
+                    E_max = np.amax(self.cr.binding.values) + pad_k_dispersion
+                    E = np.arange(E_min, E_max, self.cr.binding.values[1] - self.cr.binding.values[0])
+                    ax.plot(self.dispersion_emcee[key](E), E, *plot_dispersion_emcee_args,
+                            **plot_dispersion_emcee_kwargs)
 
         if plot_dispersion:
             if not self.dispersion:
@@ -1348,17 +1413,22 @@ class MDC(Core):
                                 "xarray.MDC.fit_ROI()")
         return
 
-    def extract_dispersion_emcee(self, force_E_dependent: bool = False, **kwargs):
+    def extract_dispersion_emcee(self, force_E_dependent: bool = False, force_E_independent: bool = False, **kwargs):
         """
         Get the dispersion, E(k), where E(k) is a fited polynomial. pass deg=int to control order of poly
         inputs:
             kwargs are key word args for np.polyfit, see their documentation.
         """
+        if self._band_crossing is not None:
+            print("You merged fit results from multiple crop regions, and now you are extracting dispersion. Are you"
+                  "sure there are no band crossings in your data? If there are, I will distract dispersion wrong.")
         if self._emcee_energies:
             print("Trying to extract dispersion from emcee results, but you only ran emcee on one energy. How can "
                   "I fit a polynomial and extract a dispersion from one point? abort.")
             return
-
+        if force_E_dependent and force_E_independent:
+            print("You are forcing both k and E to be independent variable. Only one can be. My code will make E "
+                  "independent in this case.")
         # If you are extracting dispersion, reset all populated dicts to empty
         if self._dispersion_emcee:
             self._dispersion_emcee = {}
@@ -1366,6 +1436,10 @@ class MDC(Core):
             self._kf_emcee = {}
         if self._vf_emcee:
             self._vf_emcee = {}
+        if self._kf_sigma_emcee:
+            self._kf_sigma_emcee = {}
+        if self._vf_sigma_emcee:
+            self._vf_sigma_emcee = {}
 
         # Make sure a deg for the polynomial is specified.
         try:
@@ -1383,7 +1457,7 @@ class MDC(Core):
         for key in self.MDC_peaks_emcee.keys():
             k = self.MDC_peaks_emcee[key]
             # Turns out the polyfits are better, if domain is variable with larger variance...
-            if Energies.std() > k.std() and not force_E_dependent:
+            if Energies.std() > k.std() and not force_E_dependent or force_E_independent:
                 # In this case, E will be the domain, and we will find k(E)
                 x = Energies
                 y = k
@@ -1468,27 +1542,42 @@ class MDC(Core):
                         kf_sigma = np.sqrt(cov[-1, -1])
                         vf_sigma = np.abs(np.square(vf) * np.sqrt(cov[-2, -2]))
                         # Store the kf and vf pairs we found.
-                        self._vf_emcee[key] = np.array([vf, vf_sigma])
-                        self._kf_emcee[key] = np.array([kf, kf_sigma])
+                        self._vf_emcee[key] = np.array(vf)
+                        self._kf_emcee[key] = np.array(kf)
+                        self._vf_sigma_emcee[key] = np.array(vf_sigma)
+                        self._kf_sigma_emcee[key] = np.array(kf_sigma)
+                        self._dispersion_cov_emcee[key] = cov
                     else:
                         # Store the kf and vf pairs we found.
                         self._vf_emcee[key] = np.asarray(vf)
                         self._kf_emcee[key] = np.asarray(kf)
         return
 
-    def extract_dispersion(self, force_E_dependent: bool = False, **kwargs):
+    def extract_dispersion(self, force_E_dependent: bool = False, force_E_independent: bool = False, **kwargs):
         """
         Get the dispersion, E(k), where E(k) is a fited polynomial. pass deg=int to control order of poly
         inputs:
             kwargs are key word args for np.polyfit, see their documentation.
         """
         # If you are extracting dispersion, reset all populated dicts to empty
+        if self._band_crossing is not None:
+            print("You merged fit results from multiple crop regions, and now you are extracting dispersion. Are you"
+                  "sure there are no band crossings in your data? If there are, I will distract dispersion wrong.")
+
         if self._dispersion:
             self._dispersion = {}
         if self._kf:
             self._kf = {}
         if self._vf:
             self._vf = {}
+        if self._kf_sigma:
+            self._kf_sigma = {}
+        if self._vf_sigma:
+            self._vf_sigma = {}
+
+        if force_E_dependent and force_E_independent:
+            print("You are forcing both k and E to be independent variable. Only one can be. My code will make E "
+                  "independent in this case.")
 
         # Make sure a deg for the polynomial is specified.
         try:
@@ -1591,8 +1680,11 @@ class MDC(Core):
                         kf_sigma = np.sqrt(cov[-1, -1])
                         vf_sigma = np.abs(np.square(vf) * np.sqrt(cov[-2, -2]))
                         # Store the kf and vf pairs we found.
-                        self._vf[key] = np.array([vf, vf_sigma])
-                        self._kf[key] = np.array([kf, kf_sigma])
+                        self._vf[key] = np.array([vf])
+                        self._kf[key] = np.array([kf])
+                        self._vf_sigma[key] = np.array(vf_sigma)
+                        self._kf_sigma[key] = np.array(kf_sigma)
+                        self._dispersion_cov[key] = cov
                     else:
                         # Store the kf and vf pairs we found.
                         self._vf[key] = np.asarray(vf)
@@ -1845,7 +1937,6 @@ class MDC(Core):
         # Make sure fits exist; otherwise, no constants to extract from fits.
         if not self.emcee_results:
             raise Exception("Cannot get constants of the emcee if no emcee have been run.")
-
         # Check that the model contains one constant:
         check = 0
         for keys in self.params.valuesdict():
@@ -1859,6 +1950,7 @@ class MDC(Core):
             raise Exception("Your model has more than 1 constant. Why? I assume you either use 1 or no constants. "
                             "Afterall, constant1+constant2+... is still a constant.")
 
+        self._constants_emcee = []
         # Now go find the constants and add them to self.constants
         for index in range(len(self.emcee_results)):
             self._constants_emcee.append(self.emcee_results[index].params.valuesdict()[self._constant_key])
@@ -1897,4 +1989,15 @@ class MDC(Core):
                       "and/or low bound, which I wanted to be a float that would be applied to the param specified by"
                       "key.")
         return
+
+    def lin_int(self, function_keys: List[str], emcee: bool = False):
+        """
+        Just find where the 2 linear bands labeled by function_keys intercept
+        inputs:
+            function_keys is a List of length 2 of strings that identify the two dispersions you want to find
+                intercept for.
+            emcee: bool. if true, then use emcee dispersion.
+        """
+
+
 
