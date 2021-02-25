@@ -1998,6 +1998,6 @@ class MDC(Core):
                 intercept for.
             emcee: bool. if true, then use emcee dispersion.
         """
-
+        pass
 
 
