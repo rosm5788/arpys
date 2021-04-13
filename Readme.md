@@ -1,6 +1,6 @@
 # ARPYS
 
-Angle resolved Python spectroscopy
+Angle resolved Python spectroscopy - Dessau Group
 
 Dependencies: 
 numpy,scipy, xarray, matplotlib, astropy (FITS), nexusformat (Diamond NEXUS files),
