@@ -15,3 +15,4 @@ installed in the same virtual environment as ARPYS.
 
 Same goes for the patched version of igorpy from Conrad Stansbury. (Necessary for loading MERLIN .pxt files)
 
+"Garrison" branch includes Garrison's MDC fitting packages and subroutines. 
