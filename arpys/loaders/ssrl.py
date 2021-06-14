@@ -2,6 +2,7 @@ import numpy as np
 import xarray as xr
 import h5py
 import matplotlib.pyplot as plt
+import pandas as pd
 from .utility import find_basis
 
 # Prior to 10/2020
@@ -221,5 +222,48 @@ def load_ssrl_52_photonEscan(filename):
     aligned_photonE_scan = xr.concat(aligned_eks,'photon_energy')
     aligned_photonE_scan = aligned_photonE_scan.assign_coords(coords={'photon_energy': zaxis_coord})
     return aligned_photonE_scan
+
+
+def load_ssrl_54_single(filename):
+    file = open(filename)
+    all_lines = file.readlines()
+    dimension1coord = np.fromstring(all_lines[8][18:], sep=' ')
+    dimension2coord = np.fromstring(all_lines[12][18:], sep=' ')
+
+    dims = ['energy', 'slit']
+    coords = {'energy': dimension1coord, 'slit': dimension2coord}
+
+    info1 = all_lines[16:43]
+    attrs = {}
+    for line in info1:
+        x = line.split('=')
+        attrs[x[0]] = x[-1].strip()
+
+    userinfo = all_lines[45:81]
+    for line in userinfo:
+        x = line.split('=')
+        attrs[x[0]] = x[-1].strip()
+
+    dataframe = pd.read_csv(filename, skiprows=85, delim_whitespace=True, header=None).drop([0], axis=1)
+    raw_data = dataframe.to_numpy().astype('float64')
+
+    return xr.DataArray(raw_data, dims=dims, coords=coords, attrs=attrs)
+
+
+def load_ssrl_54_fmap(filenames):
+    cuts = []
+    perps = []
+    for file in filenames:
+        single_cut = load_ssrl_54_single(file)
+        single_theta = float(single_cut.attrs['T'])
+        perps.append(single_theta)
+        cuts.append(single_cut)
+
+    perps = np.array(perps)
+    concatenated = xr.concat(cuts, 'perp')
+    concatenated = concatenated.assign_coords(coords={'perp':perps})
+
+    return concatenated
+
 
 
