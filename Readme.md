@@ -3,7 +3,7 @@
 Angle resolved Python spectroscopy - Dessau Group
 
 Dependencies: 
-numpy,scipy, xarray, matplotlib, astropy (FITS), nexusformat (Diamond NEXUS files),
+numpy,scipy, xarray, matplotlib, pandas, astropy (FITS), nexusformat (Diamond NEXUS files),
 PyImageTool (Kyle Gordon - https://github.com/kgord831/PyImageTool), and a patched version
 of igorpy from Conrad Stansbury (Lanzara Group): https://github.com/chstan/igorpy
 
