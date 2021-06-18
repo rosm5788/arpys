@@ -264,6 +264,3 @@ def load_ssrl_54_fmap(filenames):
     concatenated = concatenated.assign_coords(coords={'perp':perps})
 
     return concatenated
-
-
-

@@ -7,13 +7,14 @@ import arpys
 # For loading a single cut, NOT FOR LOADING FERMI MAPS OR PHOTON ENERGY SCANS
 def load_maestro_fits_single(filename):
     with fits.open(filename) as fits_object:
-        data_type = fits_object[1].header['TTYPE10']
+        data_type = fits_object[1].data.dtype.names[-1]
         data = fits_object[1].data[data_type].T
 
-        axis_names = fits_object[1].header['TDESC10']
-        axis_lengths = eval(fits_object[1].header['TDIM10'])
-        initial_axis_values = eval(fits_object[1].header['TRVAL10'])
-        axis_deltas = eval(fits_object[1].header['TDELT10'])
+        tfields = str(fits_object[1].header['TFIELDS'])
+        axis_names = fits_object[1].header['TDESC' + tfields]
+        axis_lengths = eval(fits_object[1].header['TDIM' + tfields])
+        initial_axis_values = eval(fits_object[1].header['TRVAL' + tfields])
+        axis_deltas = eval(fits_object[1].header['TDELT' + tfields])
         axis_names_list = axis_names.replace("(","").replace(")","").split(",")
 
         conv = {'pixel': 'slit', 'eV': 'energy', 'pixels': 'slit'}
@@ -37,15 +38,16 @@ def load_maestro_fits_single(filename):
 # For reading fermi maps ONLY, NOT FOR LOADING INDIVIDUAL SPECTRA OR PHOTON ENERGY SCANS
 def load_maestro_fits_map(filename, is_deflector=True):
     with fits.open(filename) as fits_object:
-        data_type = fits_object[1].header['TTYPE10']
+        data_type = fits_object[1].data.dtype.names[-1]
         data = fits_object[1].data
 
         # data is now a list of "fits records" each of which is a slice in slit_defl or theta
-        axis_names = fits_object[1].header['TDESC10']
+        tfields = str(fits_object[1].header['TFIELDS'])
+        axis_names = fits_object[1].header['TDESC' + tfields]
         axis_names_list = axis_names.replace("(", "").replace(")", "").split(",")
-        axis_lengths = eval(fits_object[1].header['TDIM10'])
-        initial_axis_values = eval(fits_object[1].header['TRVAL10'])
-        axis_deltas = eval(fits_object[1].header['TDELT10'])
+        axis_lengths = eval(fits_object[1].header['TDIM' + tfields])
+        initial_axis_values = eval(fits_object[1].header['TRVAL' + tfields])
+        axis_deltas = eval(fits_object[1].header['TDELT' + tfields])
 
         conv = {'pixel': 'slit', 'eV': 'energy', 'pixels': 'slit'}
         dims = ['perp']
@@ -82,15 +84,16 @@ def load_maestro_fits_map(filename, is_deflector=True):
 # For reading hvscans ONLY, NOT FOR LOADING INDIVIDUAL SPECTRA OR FERMI MAPS
 def load_maestro_fits_hvscan(filename):
     with fits.open(filename) as fits_object:
-        data_type = fits_object[1].header['TTYPE10']
+        data_type = fits_object[1].data.dtype.names[-1]
         data = fits_object[1].data
 
         # data is now a list of "fits records" each of which is a slice in photon energy
-        axis_names = fits_object[1].header['TDESC10']
+        tfields = str(fits_object[1].header['TFIELDS'])
+        axis_names = fits_object[1].header['TDESC' + tfields]
         axis_names_list = axis_names.replace("(", "").replace(")", "").split(",")
-        axis_lengths = eval(fits_object[1].header['TDIM10'])
-        initial_axis_values = eval(fits_object[1].header['TRVAL10'])
-        axis_deltas = eval(fits_object[1].header['TDELT10'])
+        axis_lengths = eval(fits_object[1].header['TDIM' + tfields])
+        initial_axis_values = eval(fits_object[1].header['TRVAL' + tfields])
+        axis_deltas = eval(fits_object[1].header['TDELT' + tfields])
 
         conv = {'pixel': 'slit', 'eV': 'energy', 'pixels': 'slit'}
         dims = []
@@ -157,7 +160,7 @@ def align_binding(single_dataarray, photon_energy):
 
 # For reading attributes from fits file
 def read_maestro_fits_attrs(fits_object):
-    photon_energy = np.float32(fits_object[1].data['Beamline EnergyDAQ'])
+    photon_energy = np.float32(fits_object[0].header['BL_E'])
     cryostat_a = np.float32(fits_object[1].data['Cryostat_A'])
     cryostat_b = np.float32(fits_object[1].data['Cryostat_B'])
     cryostat_c = np.float32(fits_object[1].data['Cryostat_C'])
