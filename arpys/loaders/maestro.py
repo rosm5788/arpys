@@ -28,7 +28,7 @@ def load_maestro_fits_single(filename):
             if axis_name_converted == "slit":
                 axis_full = np.linspace(-15, axis_length*0.045 - 15, num=axis_length)
             else:
-                axis_full = np.arange(initial_axis_value, axis_length*axis_delta + initial_axis_value, axis_delta)
+                axis_full = np.linspace(initial_axis_value, axis_length*axis_delta + initial_axis_value, num=axis_length)
             dims.append(axis_name_converted)
             coords[axis_name_converted] = axis_full
 
@@ -59,7 +59,7 @@ def load_maestro_fits_map(filename, is_deflector=True):
             if axis_name_converted == "slit":
                 axis_full = np.linspace(-15, axis_length * 0.045 - 15, num=axis_length)
             else:
-                axis_full = np.arange(initial_axis_value, axis_length * axis_delta + initial_axis_value, axis_delta)
+                axis_full = np.linspace(initial_axis_value, axis_length * axis_delta + initial_axis_value, num=axis_length)
             dims.append(axis_name_converted)
             coords[axis_name_converted] = axis_full
 
@@ -105,7 +105,7 @@ def load_maestro_fits_hvscan(filename):
             if axis_name_converted == "slit":
                 axis_full = np.linspace(-15, axis_length * 0.045 - 15, num=axis_length)
             else:
-                axis_full = np.arange(initial_axis_value, axis_length * axis_delta + initial_axis_value, axis_delta)
+                axis_full = np.linspace(initial_axis_value, axis_length * axis_delta + initial_axis_value, num=axis_length)
             dims.append(axis_name_converted)
             coords[axis_name_converted] = axis_full
 
