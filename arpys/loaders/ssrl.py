@@ -5,6 +5,44 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from .utility import find_basis
 
+
+# 02/2020 and before?? Confirmed to work with data from 02/2020
+def load_ssrl_52_prehistoric(filename):
+    conv = {'X': 'x', 'Z': 'z', 'ThetaX': 'slit', 'ThetaY': 'perp', 'Theta Y': 'perp', 'Kinetic Energy': 'energy'}
+    f = h5py.File(filename, 'r')
+    counts = np.array(f['Data']['Count']).T
+    if counts.ndim == 4:
+        # for some reason, transpose the last two axes?
+        counts = np.transpose(counts, axes=[0, 1, 3, 2])
+    delta = []
+    offset = []
+    axis_labels = []
+    for i in range(len(counts.shape)):
+        axis_key = 'Axes' + str(i)
+        try:
+            axis_label = conv[f['Data'][axis_key].attrs['Label']]
+            axis_labels.append(axis_label)
+        except KeyError as e:
+            print('Could not understand [{0}] as an arpys axis!'.format(f['Data'][axis_key].attrs['Label']))
+            return None
+        delta.append(f['Data'][axis_key].attrs['Delta'])
+        offset.append(f['Data'][axis_key].attrs['Offset'])
+    vals = np.copy(counts)
+    if 'Time' in f['Data']:
+        exposure = np.array(f['Data']['Time']).T
+        select = exposure > 0
+        vals[select] = counts[select] / exposure[select]
+        vals[~select] = 0
+    coords = {}
+    for delt, offs, label, size in zip(delta, offset, axis_labels, counts.shape):
+        coords[label] = np.arange(size) * delt + offs
+    attrs = dict(f['Beamline'].attrs).copy()
+    attrs.update(dict(f['Endstation'].attrs))
+    attrs.update(dict(f['Details'].attrs))
+    f.close()
+    return xr.DataArray(vals, dims=axis_labels, coords=coords, attrs=attrs)
+
+
 # Prior to 10/2020
 def load_ssrl_52_old(filename):
     conv = {'X': 'x', 'Z': 'z', 'ThetaX': 'slit', 'ThetaY': 'perp', 'Theta Y': 'perp', 'Kinetic Energy': 'energy'}
