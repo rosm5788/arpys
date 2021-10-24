@@ -263,9 +263,6 @@ class Arpes:
             i += 1
         return xr.DataArray(output,dims=['binding','kx'],coords={'binding':be,'kx':kx},attrs=copy.attrs)
 
-    @staticmethod
-    def dude(interp_object, interplist):
-        return interp_object(interplist)
     # This thing is monstrous, please put me out of my misery
     @requires_ef
     def spectra_k_reg_2(self, phi0=0, theta0=0, slit_orientation=0):
@@ -296,7 +293,7 @@ class Arpes:
                         np.nanmax(higher_dimensioned_spectra.energy.values),
                         theta0=0, phi0=phi0, slit_orientation=slit_orientation)
         # What even is this
-        numky = 1000
+        numky = 10
 
         lowe = np.nanmin(higher_dimensioned_spectra.energy.values)
         highe = np.nanmax(higher_dimensioned_spectra.energy.values)
@@ -344,7 +341,7 @@ class Arpes:
         #     j=0
 
         high_dim_xr = xr.DataArray(reshaped_interpolated, dims=['binding', 'kx', 'ky'],
-                                   coords={'binding': binding_array, 'kx': kx, 'ky': ky}, attrs=copy.attrs)
+                                   coords={'binding': binding_array, 'kx': kx_array, 'ky': ky_array}, attrs=copy.attrs)
         flattened = high_dim_xr.sum('ky')
         return flattened
 
