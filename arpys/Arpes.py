@@ -5,8 +5,7 @@ from functools import partial
 from scipy.optimize import curve_fit
 from scipy.interpolate import RegularGridInterpolator
 from pyimagetool import ImageTool
-from multiprocessing import Process
-
+import time
 
 def requires_ef(func):
     def func_wrapper(*args, **kwargs):
@@ -156,44 +155,165 @@ class Arpes:
         self.ef = None
         self.it = None
 
-    # Because this function uses an irregularly spaced k-mesh, we can use the "forward" k-conversion
-    # from angle space directly to k-space. K-space conversion depends on the orientation of the slit
+    # These k conversion equations are the "forward" k-conversions from angle to k-space This can be used with
+    # the irregularly spaced k-conversion codes directly. K-space conversion depends on the orientation of the slit
     # so the user must select which orientation the experiment was using. This could in practice be automated
     # by setting an attribute in the associated beamline loader, but beamlines like MAESTRO can use both slit
-    # orientations, so it's up to the user to set correctly. This version also drops support for azimuth's that
-    # are misaligned. slit_orientation values 0=vertical slit, 1=horizontal slit, 2=deflectors
+    # orientations, so it's up to the user to set correctly.
+    # slit_orientation values 0=vertical slit, 1=horizontal slit, 2=deflector+vertical slit,
+    # 3=deflector+horizontal slit, phi0 = tilt offset along slit, theta0 = perpendicular offset across slit
+    @staticmethod
+    def forward_k_conversion(ke, alpha, beta, phi0=0, theta0=0, azimuth=0, slit_orientation=0):
+        # Vertical Slit K Conversion, kx along slit
+        if slit_orientation == 0:
+            kx = 0.512 * np.sqrt(ke) * ((np.sin(np.radians(azimuth))*np.sin(np.radians(beta-theta0)) +
+                                         np.cos(np.radians(azimuth))*np.sin(np.radians(phi0)) *
+                                         np.cos(np.radians(beta-theta0)))*np.cos(np.radians(alpha)) -
+                                        np.cos(np.radians(azimuth))*np.cos(np.radians(phi0)) *
+                                        np.sin(np.radians(alpha)))
+
+            ky = 0.512 * np.sqrt(ke) * ((-1*np.cos(np.radians(azimuth)) * np.sin(np.radians(beta-theta0)) +
+                                         np.sin(np.radians(azimuth))*np.sin(np.radians(phi0)) *
+                                         np.cos(np.radians(beta-theta0)))*np.cos(np.radians(alpha)) -
+                                        np.sin(np.radians(azimuth))*np.cos(np.radians(phi0)) *
+                                        np.sin(np.radians(alpha)))
+        # Horizontal Slit K Conversion, kx along slit (swap kx and ky from Ishida paper)
+        elif slit_orientation == 1:
+            kx = 0.512 * np.sqrt(ke) * ((-1*np.cos(np.radians(azimuth))*np.sin(np.radians(phi0)) +
+                                         np.sin(np.radians(azimuth))*np.sin(np.radians(beta-theta0)) *
+                                         np.cos(np.radians(phi0))) * np.cos(np.radians(alpha)) +
+                                        (np.cos(np.radians(azimuth)) * np.cos(np.radians(phi0)) +
+                                         np.sin(np.radians(azimuth)) * np.sin(np.radians(beta-theta0)) *
+                                         np.sin(np.radians(phi0))) * np.sin(np.radians(alpha)))
+            ky = 0.512 * np.sqrt(ke) * ((np.sin(np.radians(azimuth)) * np.sin(np.radians(phi0)) +
+                                         np.cos(np.radians(azimuth))*np.sin(np.radians(beta-theta0)) *
+                                         np.cos(np.radians(phi0))) * np.cos(np.radians(alpha)) -
+                                        (np.sin(np.radians(azimuth)) * np.cos(np.radians(phi0)) -
+                                         np.cos(np.radians(azimuth)) * np.sin(np.radians(beta-theta0)) *
+                                         np.sin(np.radians(phi0))) * np.sin(np.radians(alpha)))
+        # Vertical Slit Deflector K Conversion, kx along slit
+        elif slit_orientation == 2:
+            kx = 0.512 * np.sqrt(ke) * ((-1 * np.radians(alpha) * np.cos(np.radians(azimuth)) *
+                                         np.cos(np.radians(phi0)) + np.radians(beta) * np.sin(np.radians(azimuth)) *
+                                         np.cos(np.radians(theta0)) - np.radians(beta) * np.cos(np.radians(azimuth)) *
+                                         np.sin(np.radians(phi0)) * np.sin(np.radians(theta0))) *
+                                        np.sinc(np.sqrt(np.radians(alpha)**2 + np.radians(beta)**2))
+                                        + (np.sin(np.radians(azimuth)) * np.sin(np.radians(theta0))
+                                           + np.cos(np.radians(azimuth)) * np.sin(np.radians(phi0))
+                                            * np.cos(np.radians(theta0))) *
+                                        np.cos(np.sqrt(np.radians(alpha)**2 + np.radians(beta)**2)))
+
+            ky = 0.512 * np.sqrt(ke) * ((-1 * np.radians(alpha) * np.sin(np.radians(azimuth)) *
+                                         np.cos(np.radians(phi0)) - np.radians(beta) * np.cos(np.radians(azimuth)) *
+                                         np.cos(np.radians(theta0)) - np.radians(beta) * np.sin(np.radians(azimuth)) *
+                                         np.sin(np.radians(phi0)) * np.sin(np.radians(theta0))) *
+                                        np.sinc(np.sqrt(np.radians(alpha)**2 + np.radians(beta)**2)) -
+                                        (np.cos(np.radians(azimuth)) * np.sin(np.radians(theta0)) -
+                                         np.sin(np.radians(azimuth)) * np.sin(np.radians(phi0)) *
+                                         np.cos(np.radians(theta0))) *
+                                        np.cos(np.sqrt(np.radians(alpha)**2 + np.radians(beta)**2)))
+
+        # Horizontal Slit Deflector K Conversion
+        elif slit_orientation == 3:
+            kx = 0.512 * np.sqrt(ke) * ((-1 * np.radians(beta) * np.sin(np.radians(azimuth)) *
+                                         np.cos(np.radians(phi0)) + np.radians(alpha) * np.cos(np.radians(azimuth)) *
+                                         np.cos(np.radians(theta0)) + np.radians(alpha) * np.sin(np.radians(azimuth)) *
+                                         np.sin(np.radians(phi0)) * np.sin(np.radians(theta0))) *
+                                        np.sinc(np.sqrt(np.radians(alpha)**2 + np.radians(beta)**2)) -
+                                        (np.cos(np.radians(azimuth)) * np.sin(np.radians(theta0)) -
+                                         np.sin(np.radians(azimuth)) * np.sin(np.radians(phi0)) *
+                                         np.cos(np.radians(theta0))) *
+                                        np.cos(np.sqrt(np.radians(alpha)**2 + np.radians(beta)**2)))
+
+            ky = 0.512 * np.sqrt(ke) * ((-1 * np.radians(beta) * np.cos(np.radians(azimuth)) *
+                                         np.cos(np.radians(phi0)) - np.radians(alpha) * np.sin(np.radians(azimuth)) *
+                                         np.cos(np.radians(theta0)) + np.radians(alpha) * np.cos(np.radians(azimuth)) *
+                                         np.sin(np.radians(phi0)) * np.sin(np.radians(theta0))) *
+                                        np.sinc(np.sqrt(np.radians(alpha)**2 + np.radians(beta)**2)) +
+                                        (np.sin(np.radians(azimuth)) * np.sin(np.radians(theta0)) +
+                                         np.cos(np.radians(azimuth)) * np.sin(np.radians(phi0)) *
+                                         np.cos(np.radians(theta0))) *
+                                        np.cos(np.sqrt(np.radians(alpha)**2 + np.radians(beta)**2)))
+        else:
+            kx = None
+            ky = None
+            print('Slit Orientation not set correctly')
+
+        return kx, ky
+    @staticmethod
+    def calc_inverse_rotation_matrix(phi0=0, theta0=0, azimuth=0):
+        trot_inv = np.array([[np.cos(np.radians(phi0)) * np.cos(np.radians(azimuth)), np.cos(np.radians(phi0)) *
+                             np.sin(np.radians(azimuth)), -1*np.sin(np.radians(phi0))],
+                             [np.sin(np.radians(theta0)) * np.sin(np.radians(phi0)) * np.cos(np.radians(azimuth)) -
+                              np.cos(np.radians(theta0)) * np.sin(np.radians(azimuth)),
+                              np.sin(np.radians(theta0)) * np.sin(np.radians(phi0)) * np.sin(np.radians(azimuth)) +
+                              np.cos(np.radians(theta0)) * np.cos(np.radians(azimuth)),
+                              np.sin(np.radians(theta0)) * np.cos(np.radians(phi0))],
+                             [np.cos(np.radians(theta0)) * np.sin(np.radians(phi0)) * np.cos(np.radians(azimuth)) +
+                              np.sin(np.radians(theta0)) * np.sin(np.radians(azimuth)),
+                              np.cos(np.radians(theta0)) * np.sin(np.radians(phi0)) * np.sin(np.radians(azimuth)) -
+                              np.sin(np.radians(theta0)) * np.cos(np.radians(azimuth)), np.cos(np.radians(theta0)) *
+                              np.cos(np.radians(phi0))]])
+        return trot_inv
+
+    @staticmethod
+    def reverse_k_conversion(ke, kx, ky, phi0=0, theta0=0, azimuth=0, slit_orientation=0):
+        k = 0.512 * np.sqrt(ke)
+        kz = np.sqrt(k**2 - kx**2 - ky**2)
+
+        # Vertical Slit
+        if slit_orientation == 0:
+            alpha = np.degrees(np.arcsin((np.sin(np.radians(phi0)) * kz - (np.cos(np.radians(phi0)) *
+                                                                           (np.cos(np.radians(azimuth)) * kx +
+                                                                            np.sin(np.radians(azimuth)) * ky))) / k))
+            beta = theta0 + np.degrees(np.arctan((np.sin(np.radians(azimuth)) * kx - np.cos(np.radians(azimuth)) * ky) /
+                                                 (np.sin(np.radians(phi0)) * np.cos(np.radians(azimuth)) * kx +
+                                                  np.sin(np.radians(phi0))*np.sin(np.radians(azimuth)) * ky +
+                                                  np.cos(np.radians(phi0)) * kz)))
+        # Horizontal Slit - I've switched kx and ky from the Ishida paper to keep kx along the slit,
+        # and ky across the slit
+        elif slit_orientation == 1:
+            alpha = np.degrees(np.arcsin((np.sin(np.radians(phi0))*np.sqrt(k**2 - (np.sin(np.radians(azimuth))*ky -
+                                                                                   np.cos(np.radians(azimuth))*kx)**2) -
+                                          np.cos(np.radians(phi0))*(np.sin(np.radians(azimuth))*ky -
+                                                                    np.cos(np.radians(azimuth))*kx))/k))
+            beta = theta0 + np.degrees(np.arctan((np.cos(np.radians(azimuth))*ky + np.sin(np.radians(azimuth)) * kx)
+                                                 / kz))
+        # Vertical Slit Deflectors
+        elif slit_orientation == 2:
+            trot_inv = Arpes.calc_inverse_rotation_matrix(phi0=phi0, theta0=theta0, azimuth=azimuth)
+            print("2 then 1: " + str(trot_inv[2,1]))
+            print("1 then 2: " + str(trot_inv[1,2]))
+            
+            alpha = (-180/np.pi)*np.arccos(((trot_inv[2,0] * kx) + (trot_inv[2,1] * ky) + (trot_inv[2,2] * kz))/k)*((trot_inv[0,0] * kx) + (trot_inv[0,1] * ky) + (trot_inv[0,2] * kz))/np.sqrt(k**2 - ((trot_inv[2,0] * kx) + (trot_inv[2,1] * ky)+(trot_inv[2,2] * kz))**2)
+            beta = (-180/np.pi)*np.arccos(((trot_inv[2,0] * kx) + (trot_inv[2,1] * ky) + (trot_inv[2,2] * kz)) / k)*(((trot_inv[1,0] * kx) + (trot_inv[1,1] * ky) + (trot_inv[1,2] * kz))/np.sqrt(k**2 - ((trot_inv[2,0] * kx) + (trot_inv[2,1] * ky)+(trot_inv[2,2] * kz))**2))
+            
+        # Horizontal Slit Deflectors switching ky -> kx from the Ishida paper to keep kx along the slit
+        elif slit_orientation == 3:
+            trot_inv = Arpes.calc_inverse_rotation_matrix(phi0=phi0, theta0=theta0, azimuth=azimuth)
+            alpha = np.degrees(np.arccos((trot_inv[2,0] * ky + trot_inv[2,1] * kx + trot_inv[2,2] * kz)/k) *
+                               ((trot_inv[1,0] * ky + trot_inv[1,1] * kx + trot_inv[1,2] * kz) /
+                                np.sqrt(k**2 - (trot_inv[2,0] * ky + trot_inv[2,1]*kx + trot_inv[2,2] * kz)**2)))
+            beta = -1 * np.degrees(np.arccos((trot_inv[2,0] * ky + trot_inv[2,1] * kx + trot_inv[2,2] * kz) / k) *
+                                  ((trot_inv[0,0] * ky + trot_inv[0,1] * kx + trot_inv[0,2] * kz) /
+                                   np.sqrt(k**2 - (trot_inv[2,0] * ky + trot_inv[2,1] * kx + trot_inv[2,2] * kz)**2)))
+        else:
+            alpha = None
+            beta = None
+            print('slit_orientation not set properly')
+
+        return alpha, beta, ke,
+
+
     @requires_ef
-    def map_isoenergy_k_irreg(self, ke=None, be=None, binwidth=1, phi0=0, theta0=0, slit_orientation=0):
+    def map_isoenergy_k_irreg(self, ke=None, be=None, binwidth=1, phi0=0, theta0=0, azimuth=0, slit_orientation=0):
         if ke is None:
             ke = be + self.ef
         iso_e = self._obj.arpes.sel_kinetic(ke - binwidth, ke + binwidth).sum('energy')
         alpha, T = np.meshgrid(iso_e.arpes.slit, iso_e.arpes.perp, indexing='ij')
-
-        # Vertical Slit K Conversion, kx along slit
-        if slit_orientation == 0:
-            kx = -1 * 0.512 * np.sqrt(ke) * (np.sin((np.pi / 180)*(alpha + phi0))/2.0 + np.sin((np.pi / 180)
-                                             * (alpha - phi0))/2.0 -
-                                             np.cos((np.pi / 180) * (T - theta0)) *
-                                             (np.sin((np.pi / 180) * (alpha + phi0))/2.0 -
-                                             np.sin((np.pi / 180) * (alpha - phi0))/2.0))
-
-            ky = -1 * 0.512 * np.sqrt(ke) * np.cos(np.pi / 180 * (alpha-phi0)) * np.sin(np.pi / 180 * (T - theta0))
-            iso_e = iso_e.assign_coords({'kx': (('slit', 'perp'), kx), 'ky': (('slit', 'perp'), ky)})
-        # Horizontal Slit K Conversion, kx along slit
-        elif slit_orientation == 1:
-            kx = 0.512 * np.sqrt(ke) * np.sin((np.pi / 180) * (alpha - phi0))
-            ky = 0.512 * np.sqrt(ke) * np.sin((np.pi / 180) * (T - theta0)) * np.cos((np.pi / 180) * (alpha - phi0))
-            iso_e = iso_e.assign_coords({'kx': (('slit', 'perp'), kx), 'ky': (('slit', 'perp'), ky)})
-        # Deflector K Conversion, kx along slit, orientation of slit shouldn't matter... (overall minus sign difference
-        # in kx, this just changes the direction of k, doesn't mess with magnitudes)
-        elif slit_orientation == 2:
-            kx = 0.512 * np.sqrt(ke) * ((alpha - phi0)/(np.sqrt((alpha-phi0)**2 + (T-theta0)**2))) * \
-                 np.sin((np.pi / 180) * np.sqrt((alpha-phi0)**2 + (T-theta0)**2))
-            ky = -1 * 0.512 * np.sqrt(ke) * ((T - theta0)/(np.sqrt((alpha - phi0)**2 + (T - theta0)**2)))\
-                 * np.sin((np.pi / 180) * np.sqrt((alpha - phi0)**2 + (T - theta0)**2))
-
-            iso_e = iso_e.assign_coords({'kx': (('slit', 'perp'), kx), 'ky': (('slit', 'perp'), ky)})
-
+        kx, ky = self.forward_k_conversion(ke, alpha, T, phi0=phi0, theta0=theta0, azimuth=azimuth,
+                                           slit_orientation=slit_orientation)
+        iso_e = iso_e.assign_coords({'kx': (('slit', 'perp'), kx), 'ky': (('slit', 'perp'), ky)})
         return iso_e
 
     # Uses an irregularly spaced k-mesh, very quick, good for just plotting.
@@ -203,31 +323,70 @@ class Arpes:
     # assumed to be the offset perpendicular to the slit from normal emission.
     # slit_orientation values 0=vertical slit, 1=horizontal slit, 2=deflector(single cuts)
     @requires_ef
-    def spectra_k_irreg(self, phi0=0, theta_offset=0, slit_orientation=0):
+    def spectra_k_irreg(self, phi0=0, theta0=0, slit_orientation=0):
         KE, alpha = np.meshgrid(self._obj.arpes.energy, self._obj.arpes.slit, indexing='ij')
+        kx, ky = self.forward_k_conversion(KE, alpha, 0, phi0=phi0, theta0=theta0, slit_orientation=slit_orientation)
 
-        # Vertical Slit
-        if slit_orientation == 0:
-            kx = -1 * 0.512 * np.sqrt(KE) * (np.sin((np.pi / 180)*(alpha + phi0))/2.0 + np.sin((np.pi / 180)
-                                             * (alpha - phi0))/2.0 -
-                                             np.cos((np.pi / 180) * theta_offset) *
-                                             (np.sin((np.pi / 180) * (alpha + phi0))/2.0 -
-                                             np.sin((np.pi / 180) * (alpha - phi0))/2.0))
-            self._obj = self._obj.assign_coords(
-                {'kx': (('energy', 'slit'), kx), 'binding': (('energy', 'slit'), KE - self.ef)})
-        # Horizontal Slit
-        elif slit_orientation == 1:
-            kx = 0.512 * np.sqrt(KE) * np.sin((np.pi / 180) * (alpha - phi0))
-            self._obj = self._obj.assign_coords(
-                {'kx': (('energy', 'slit'), kx), 'binding': (('energy', 'slit'), KE - self.ef)})
-        # Deflector Cut
-        elif slit_orientation == 2:
-            kx = 0.512 * np.sqrt(KE) * ((alpha-phi0)/(np.sqrt((alpha-phi0)**2 + theta_offset**2))) * np.sin(
-                (np.pi / 180)*(np.sqrt((alpha-phi0)**2 + theta_offset**2)))
-            self._obj = self._obj.assign_coords(
-                {'kx': (('energy', 'slit'), kx), 'binding': (('energy', 'slit'), KE - self.ef)})
+        self._obj = self._obj.assign_coords(
+            {'kx': (('energy', 'slit'), kx), 'binding': (('energy', 'slit'), KE - self.ef)})
 
         return self._obj
+
+    # Uses a regularly spaced grid and utilizes linear interpolation via scipy RegularGridInterpolator
+    # This function is a bit of a mess, using both forward and reverse k-conversion and some fancy footwork with
+    # meshgrids and flattening and the such like. Probably needs work to optimize and make faster
+    @requires_ef
+    def map_k_reg(self, phi0=0, theta0=0, azimuth=0, slit_orientation=0):
+        copy = self._obj.copy()
+        # Fix the ordering of dimensions to energy,slit,perp
+        copy = copy.transpose('energy', 'slit', 'perp')
+        interp_object = RegularGridInterpolator((copy.energy.values, copy.slit.values, copy.perp.values),
+                                                copy.values, bounds_error=False, fill_value=0)
+
+        kxmin, ky = Arpes.forward_k_conversion(np.nanmax(copy.energy.values),
+                                               np.nanmin(copy.slit.values), 0, phi0=phi0, theta0=theta0,
+                                               azimuth=azimuth, slit_orientation=slit_orientation)
+        kxmax, ky = Arpes.forward_k_conversion(np.nanmax(copy.energy.values),
+                                               np.nanmax(copy.slit.values), 0, phi0=phi0, theta0=theta0,
+                                               azimuth=azimuth, slit_orientation=slit_orientation)
+        kx, kymin = Arpes.forward_k_conversion(np.nanmax(copy.energy.values), 0,
+                                               np.nanmin(copy.perp.values), phi0=phi0, theta0=theta0,
+                                               azimuth=azimuth, slit_orientation=slit_orientation)
+        kx, kymax = Arpes.forward_k_conversion(np.nanmax(copy.energy.values), 0,
+                                               np.nanmax(copy.perp.values), phi0=phi0, theta0=theta0,
+                                               azimuth=azimuth, slit_orientation=slit_orientation)
+
+        kx_new = np.sort(np.linspace(kxmin, kxmax, num=copy.slit.size, endpoint=True))
+        ky_new = np.sort(np.linspace(kymin, kymax, num=copy.perp.size, endpoint=True))
+        energy_new = np.linspace(np.nanmin(copy.energy.values), np.nanmax(copy.energy.values),
+                                 num=copy.energy.size, endpoint=True)
+
+        # Using sparse grid fails when you go to flatten things out for interpolation
+        energy_grid, kxx, kyy = np.meshgrid(energy_new, kx_new, ky_new, indexing='ij', sparse=False)
+        # Timing this function
+        t0 = time.time()
+        alpha, beta, energy = Arpes.reverse_k_conversion(energy_grid, kxx, kyy, phi0=phi0, theta0=theta0,
+                                                         azimuth=azimuth, slit_orientation=slit_orientation)
+        t1 = time.time()
+        time_elapsed = t1 - t0
+        print("Generation of interpolation points time elapsed = " + str(np.around(time_elapsed, decimals=3)) + "s")
+        # Flatten out the grids to create a list of interpolation points which we will effectively loop through
+        alpha_flat = alpha.reshape(-1, order='C')
+        beta_flat = beta.reshape(-1, order='C')
+        energy_flat = energy.reshape(-1, order='C')
+        points_stacked = np.stack((energy_flat, alpha_flat, beta_flat))
+
+        print("Calling interpolation on " + str(alpha_flat.size) + " points")
+        # Do the interpolation
+        t2 = time.time()
+        interpolation_output = interp_object(points_stacked.T)
+        t3 = time.time()
+        print("Interpolation time elapsed = " + str(np.around(t3-t2, decimals=3)) + "s")
+
+        interpolation_reshaped = interpolation_output.reshape((alpha.shape[0], alpha.shape[1], alpha.shape[2]),
+                                                              order='C')
+        return xr.DataArray(interpolation_reshaped, dims=['binding', 'kx', 'ky'],
+                            coords={'binding': energy_new - self.ef, 'kx': kx_new, 'ky': ky_new}, attrs=copy.attrs)
 
     # This is much slower and relies on scipy RegularGridInterpolator and utilizes linear interpolation
     # to produce the rectilinear energy vs. k grid. This may not be strictly mathematically exact in preservation
@@ -264,6 +423,7 @@ class Arpes:
         return xr.DataArray(output,dims=['binding','kx'],coords={'binding':be,'kx':kx},attrs=copy.attrs)
 
     # This thing is monstrous, please put me out of my misery
+    # Here theta0 is the distance to normal emission where this cut was taken
     @requires_ef
     def spectra_k_reg_2(self, phi0=0, theta0=0, slit_orientation=0):
         copy = self._obj.copy()
@@ -272,78 +432,83 @@ class Arpes:
         # Padding spectra with Theta+-0.1
         empty_space = np.zeros(copy.values.shape)
         empty_xr = xr.DataArray(empty_space, dims=copy.dims, coords=copy.coords, attrs=copy.attrs)
-        higher_dimensioned_spectra = xr.concat([empty_xr,copy,empty_xr], 'theta')
+        higher_dimensioned_spectra = xr.concat([empty_xr, copy, empty_xr], 'perp')
         higher_dim_thetas = [theta0-0.1, theta0, theta0+0.1]
-        higher_dimensioned_spectra = higher_dimensioned_spectra.transpose("energy", "slit", "theta")
+        higher_dimensioned_spectra = higher_dimensioned_spectra.assign_coords({'perp': higher_dim_thetas})
+        higher_dimensioned_spectra = higher_dimensioned_spectra.transpose("energy", "slit", "perp")
         interp_object = RegularGridInterpolator((higher_dimensioned_spectra.energy.values,
                                                  higher_dimensioned_spectra.slit.values, higher_dim_thetas),
                                                 higher_dimensioned_spectra.values, bounds_error=False, fill_value=0)
-        lowkx = alpha2k(np.nanmin(higher_dimensioned_spectra.slit.values),
-                        np.nanmax(higher_dimensioned_spectra.energy.values), theta0=theta0, phi0=phi0,
-                        slit_orientation=slit_orientation)
 
-        highkx = alpha2k(np.nanmax(higher_dimensioned_spectra.slit.values),
-                         np.nanmax(higher_dimensioned_spectra.energy.values),
-                         theta0=theta0, phi0=phi0, slit_orientation=slit_orientation)
-        numkx = higher_dimensioned_spectra.slit.size
-        lowky = beta2k(theta0, np.nanmax(np.abs(higher_dimensioned_spectra.slit.values)),
-                       np.nanmax(higher_dimensioned_spectra.energy.values),
-                       theta0=0, phi0=phi0, slit_orientation=slit_orientation)
-        highky = beta2k(theta0, np.nanmin(np.abs(higher_dimensioned_spectra.slit.values)),
-                        np.nanmax(higher_dimensioned_spectra.energy.values),
-                        theta0=0, phi0=phi0, slit_orientation=slit_orientation)
+        kxmin, ky = Arpes.forward_k_conversion(np.nanmax(higher_dimensioned_spectra.energy.values),
+                                               np.nanmin(higher_dimensioned_spectra.slit.values), theta0,
+                                               phi0=phi0, theta0=0,
+                                               azimuth=0, slit_orientation=slit_orientation)
+        kxmax, ky = Arpes.forward_k_conversion(np.nanmax(higher_dimensioned_spectra.energy.values),
+                                               np.nanmax(higher_dimensioned_spectra.slit.values), theta0,
+                                               phi0=phi0, theta0=0,
+                                               azimuth=0, slit_orientation=slit_orientation)
+
+        if theta0 <= 0:
+            kx, kymin = Arpes.forward_k_conversion(np.nanmax(higher_dimensioned_spectra.energy.values), 0,
+                                               np.nanmin(higher_dimensioned_spectra.perp.values),
+                                               phi0=phi0, theta0=0,
+                                               azimuth=0, slit_orientation=slit_orientation)
+            kx, kymax = Arpes.forward_k_conversion(np.nanmax(higher_dimensioned_spectra.energy.values),
+                                               np.nanmax(np.abs(higher_dimensioned_spectra.slit.values - phi0)),
+                                               np.nanmax(higher_dimensioned_spectra.perp.values),
+                                               phi0=phi0, theta0=0,
+                                               azimuth=0, slit_orientation=slit_orientation)
+        else:
+            kx, kymin = Arpes.forward_k_conversion(np.nanmax(higher_dimensioned_spectra.energy.values),
+                                               np.nanmax(np.abs(higher_dimensioned_spectra.slit.values - phi0)),
+                                               np.nanmin(higher_dimensioned_spectra.perp.values),
+                                               phi0=phi0, theta0=0,
+                                               azimuth=0, slit_orientation=slit_orientation)
+            kx, kymax = Arpes.forward_k_conversion(np.nanmax(higher_dimensioned_spectra.energy.values), 0,
+                                               np.nanmax(higher_dimensioned_spectra.perp.values),
+                                               phi0=phi0, theta0=0,
+                                               azimuth=0, slit_orientation=slit_orientation)
+
         # What even is this
-        numky = 10
+        numky = 100
+        kx_new = np.sort(np.linspace(kxmin, kxmax, num=higher_dimensioned_spectra.slit.size, endpoint=True))
+        ky_new = np.sort(np.linspace(kymin, kymax, num=numky, endpoint=True))
+        print(ky_new)
+        energy_new = np.linspace(np.nanmin(higher_dimensioned_spectra.energy.values),
+                                 np.nanmax(higher_dimensioned_spectra.energy.values),
+                                 num=higher_dimensioned_spectra.energy.size, endpoint=True)
 
-        lowe = np.nanmin(higher_dimensioned_spectra.energy.values)
-        highe = np.nanmax(higher_dimensioned_spectra.energy.values)
-        nume = higher_dimensioned_spectra.energy.size
+        # Using sparse grid fails when you go to flatten things out for interpolation
+        energy_grid, kxx, kyy = np.meshgrid(energy_new, kx_new, ky_new, indexing='ij', sparse=False)
+        # Timing this function
+        t0 = time.time()
+        alpha, beta, energy = Arpes.reverse_k_conversion(energy_grid, kxx, kyy, phi0=phi0, theta0=0,
+                                                         azimuth=0, slit_orientation=slit_orientation)
+        t1 = time.time()
+        time_elapsed = t1 - t0
+        print("Generation of interpolation points time elapsed = " + str(np.around(time_elapsed, decimals=3)) + "s")
+        # Flatten out the grids to create a list of interpolation points which we will effectively loop through
+        alpha_flat = alpha.reshape(-1, order='C')
+        beta_flat = beta.reshape(-1, order='C')
+        energy_flat = energy.reshape(-1, order='C')
+        points_stacked = np.stack((energy_flat, alpha_flat, beta_flat))
 
-        energy_array = np.linspace(lowe, highe, num=nume, endpoint=True)
-        binding_array = energy_array - self.ef
-        kx_array = np.linspace(lowkx, highkx, num=numkx, endpoint=True)
-        ky_array = np.linspace(lowky, highky, num=numky, endpoint=True)
+        print("Calling interpolation on " + str(alpha_flat.size) + " points")
+        # Do the interpolation
+        t2 = time.time()
+        interpolation_output = interp_object(points_stacked.T)
+        t3 = time.time()
+        print("Interpolation time elapsed = " + str(np.around(t3 - t2, decimals=3)) + "s")
 
-        # DO IT! JUST DO IT! DONT LET YOUR DREAMS BE DREAMS!
-        print("We doin this?")
-        interpolation_points = []
-        for energy in energy_array:
-            for kx in kx_array:
-                for ky in ky_array:
-                    interpolation_points.append([energy, k2alpha(kx, ky, energy, phi0=phi0,
-                                                                 slit_orientation=slit_orientation),
-                                                 k2beta(kx, ky, energy, phi0=phi0, slit_orientation=slit_orientation)])
-
-        interpolation_points = np.array(interpolation_points)
-        print(interpolation_points.shape)
-        print("points array generated, now callling interpolation object")
-        flat_interpolated = interp_object(interpolation_points)
-        print("interpolation finished, now reshaping etc.")
-        reshaped_interpolated = np.reshape(flat_interpolated,
-                                           (energy_array.size, kx_array.size, ky_array.size), order='C')
-        print(reshaped_interpolated.shape)
-        # regridded_higherdimension = np.empty((energy_array.size, kx_array.size, ky_array.size))
-        # i = 0
-        # j = 0
-        # k = 0
-        # for energy in energy_array:
-        #     for kx in kx_array:
-        #         for ky in ky_array:
-        #             regridded_higherdimension[i, j, k] = interp_object([energy, k2alpha(kx, ky, energy,
-        #                                                                                 phi0=phi0,
-        #                                                                 slit_orientation=slit_orientation),
-        #                                                                 k2beta(kx, ky, energy, phi0=phi0,
-        #                                                                        slit_orientation=slit_orientation)])
-        #             k+=1
-        #         j+=1
-        #         k=0
-        #     i+=1
-        #     j=0
-
-        high_dim_xr = xr.DataArray(reshaped_interpolated, dims=['binding', 'kx', 'ky'],
-                                   coords={'binding': binding_array, 'kx': kx_array, 'ky': ky_array}, attrs=copy.attrs)
-        flattened = high_dim_xr.sum('ky')
+        interpolation_reshaped = interpolation_output.reshape((alpha.shape[0], alpha.shape[1], alpha.shape[2]),
+                                                              order='C')
+        higher_dimension_xr = xr.DataArray(interpolation_reshaped, dims=['binding', 'kx', 'ky'],
+                                           coords={'binding': energy_new - self.ef, 'kx': kx_new, 'ky': ky_new},
+                                           attrs=copy.attrs)
+        flattened = higher_dimension_xr.sum('ky')
         return flattened
+
 
     # Kz maps should always be in binding energy, will need to shift off using a fixed work-function to recover
     # kinetic energy for k conversion
