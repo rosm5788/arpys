@@ -242,7 +242,7 @@ class Arpes:
         return kx, ky
     @staticmethod
     def calc_inverse_rotation_matrix(phi0=0, theta0=0, azimuth=0):
-        trot_inv = np.array([[np.cos(np.radians(phi0)) * np.cos(np.radians(azimuth)), np.cos(np.radians(phi0)) *
+        trot_inv = np.array([[np.cos(np.radians(theta0)) * np.cos(np.radians(azimuth))   , np.cos(np.radians(phi0)) *
                              np.sin(np.radians(azimuth)), -1*np.sin(np.radians(phi0))],
                              [np.sin(np.radians(theta0)) * np.sin(np.radians(phi0)) * np.cos(np.radians(azimuth)) -
                               np.cos(np.radians(theta0)) * np.sin(np.radians(azimuth)),
@@ -282,8 +282,6 @@ class Arpes:
         # Vertical Slit Deflectors
         elif slit_orientation == 2:
             trot_inv = Arpes.calc_inverse_rotation_matrix(phi0=phi0, theta0=theta0, azimuth=azimuth)
-            print("2 then 1: " + str(trot_inv[2,1]))
-            print("1 then 2: " + str(trot_inv[1,2]))
             
             alpha = (-180/np.pi)*np.arccos(((trot_inv[2,0] * kx) + (trot_inv[2,1] * ky) + (trot_inv[2,2] * kz))/k)*((trot_inv[0,0] * kx) + (trot_inv[0,1] * ky) + (trot_inv[0,2] * kz))/np.sqrt(k**2 - ((trot_inv[2,0] * kx) + (trot_inv[2,1] * ky)+(trot_inv[2,2] * kz))**2)
             beta = (-180/np.pi)*np.arccos(((trot_inv[2,0] * kx) + (trot_inv[2,1] * ky) + (trot_inv[2,2] * kz)) / k)*(((trot_inv[1,0] * kx) + (trot_inv[1,1] * ky) + (trot_inv[1,2] * kz))/np.sqrt(k**2 - ((trot_inv[2,0] * kx) + (trot_inv[2,1] * ky)+(trot_inv[2,2] * kz))**2))
