@@ -155,6 +155,19 @@ class Arpes:
         self.ef = None
         self.it = None
 
+    @staticmethod
+    def calc_rotation_matrix(phi0=0, theta0=0, azimuth=0):
+        trot = np.array([[np.cos(np.radians(azimuth))*np.cos(np.radians(phi0)), np.cos(np.radians(azimuth)) *
+                          np.sin(np.radians(theta0)) * np.sin(np.radians(phi0)) - np.sin(np.radians(azimuth)) *
+                          np.cos(np.radians(theta0)), np.cos(np.radians(azimuth)) * np.cos(np.radians(theta0)) *
+                          np.sin(np.radians(phi0)) + np.sin(np.radians(azimuth)) * np.sin(np.radians(theta0))],
+                         [np.sin(np.radians(azimuth)) * np.cos(np.radians(phi0)), np.cos(np.radians(azimuth)) *
+                          np.cos(np.radians(theta0)) + np.sin(np.radians(azimuth)) * np.sin(np.radians(phi0)) *
+                          np.sin(np.radians(theta0)), np.sin(np.radians(azimuth)) * np.sin(np.radians(phi0)) *
+                          np.cos(np.radians(theta0)) - np.cos(np.radians(azimuth)) * np.sin(np.radians(theta0))],
+                         [-1*np.sin(np.radians(phi0)), np.cos(np.radians(phi0)) * np.sin(np.radians(theta0)),
+                          np.cos(np.radians(phi0)) * np.cos(np.radians(theta0))]])
+        return trot
     # These k conversion equations are the "forward" k-conversions from angle to k-space This can be used with
     # the irregularly spaced k-conversion codes directly. K-space conversion depends on the orientation of the slit
     # so the user must select which orientation the experiment was using. This could in practice be automated
@@ -193,47 +206,27 @@ class Arpes:
                                          np.sin(np.radians(phi0))) * np.sin(np.radians(alpha)))
         # Vertical Slit Deflector K Conversion, kx along slit
         elif slit_orientation == 2:
-            kx = 0.512 * np.sqrt(ke) * ((-1 * np.radians(alpha) * np.cos(np.radians(azimuth)) *
-                                         np.cos(np.radians(phi0)) + np.radians(beta) * np.sin(np.radians(azimuth)) *
-                                         np.cos(np.radians(theta0)) - np.radians(beta) * np.cos(np.radians(azimuth)) *
-                                         np.sin(np.radians(phi0)) * np.sin(np.radians(theta0))) *
-                                        np.sinc(np.sqrt(np.radians(alpha)**2 + np.radians(beta)**2))
-                                        + (np.sin(np.radians(azimuth)) * np.sin(np.radians(theta0))
-                                           + np.cos(np.radians(azimuth)) * np.sin(np.radians(phi0))
-                                            * np.cos(np.radians(theta0))) *
-                                        np.cos(np.sqrt(np.radians(alpha)**2 + np.radians(beta)**2)))
+            trot = Arpes.calc_rotation_matrix(phi0=phi0, theta0=theta0, azimuth=0)
+            eta = np.sqrt(np.radians(alpha)**2 + np.radians(beta)**2)
 
-            ky = 0.512 * np.sqrt(ke) * ((-1 * np.radians(alpha) * np.sin(np.radians(azimuth)) *
-                                         np.cos(np.radians(phi0)) - np.radians(beta) * np.cos(np.radians(azimuth)) *
-                                         np.cos(np.radians(theta0)) - np.radians(beta) * np.sin(np.radians(azimuth)) *
-                                         np.sin(np.radians(phi0)) * np.sin(np.radians(theta0))) *
-                                        np.sinc(np.sqrt(np.radians(alpha)**2 + np.radians(beta)**2)) -
-                                        (np.cos(np.radians(azimuth)) * np.sin(np.radians(theta0)) -
-                                         np.sin(np.radians(azimuth)) * np.sin(np.radians(phi0)) *
-                                         np.cos(np.radians(theta0))) *
-                                        np.cos(np.sqrt(np.radians(alpha)**2 + np.radians(beta)**2)))
+            kx = 0.512 * np.sqrt(ke) * ((-1 * np.radians(alpha) * trot[0,0] * np.sinc(eta / np.pi)) +
+                                        (-1 * np.radians(beta) * trot[0,1] * np.sinc(eta / np.pi)) +
+                                        trot[0,2] * np.cos(eta))
+            ky = 0.512 * np.sqrt(ke) * ((-1 * np.radians(alpha) * trot[1,0] * np.sinc(eta / np.pi)) +
+                                        (-1 * np.radians(beta) * trot[1,1] * np.sinc(eta / np.pi)) +
+                                        trot[1,2] * np.cos(eta))
 
         # Horizontal Slit Deflector K Conversion
         elif slit_orientation == 3:
-            kx = 0.512 * np.sqrt(ke) * ((-1 * np.radians(beta) * np.sin(np.radians(azimuth)) *
-                                         np.cos(np.radians(phi0)) + np.radians(alpha) * np.cos(np.radians(azimuth)) *
-                                         np.cos(np.radians(theta0)) + np.radians(alpha) * np.sin(np.radians(azimuth)) *
-                                         np.sin(np.radians(phi0)) * np.sin(np.radians(theta0))) *
-                                        np.sinc(np.sqrt(np.radians(alpha)**2 + np.radians(beta)**2)) -
-                                        (np.cos(np.radians(azimuth)) * np.sin(np.radians(theta0)) -
-                                         np.sin(np.radians(azimuth)) * np.sin(np.radians(phi0)) *
-                                         np.cos(np.radians(theta0))) *
-                                        np.cos(np.sqrt(np.radians(alpha)**2 + np.radians(beta)**2)))
+            trot = Arpes.calc_rotation_matrix(phi0=phi0, theta0=theta0, azimuth=0)
+            eta = np.sqrt(np.radians(alpha) ** 2 + np.radians(beta) ** 2)
+            kx = 0.512 * np.sqrt(ke) * ((-1 * np.radians(beta) * trot[1,0] * np.sinc(eta / np.pi)) +
+                                        (np.radians(alpha) * trot[1,1] * np.sinc(eta / np.pi)) +
+                                        (trot[1,2] * np.cos(eta)))
 
-            ky = 0.512 * np.sqrt(ke) * ((-1 * np.radians(beta) * np.cos(np.radians(azimuth)) *
-                                         np.cos(np.radians(phi0)) - np.radians(alpha) * np.sin(np.radians(azimuth)) *
-                                         np.cos(np.radians(theta0)) + np.radians(alpha) * np.cos(np.radians(azimuth)) *
-                                         np.sin(np.radians(phi0)) * np.sin(np.radians(theta0))) *
-                                        np.sinc(np.sqrt(np.radians(alpha)**2 + np.radians(beta)**2)) +
-                                        (np.sin(np.radians(azimuth)) * np.sin(np.radians(theta0)) +
-                                         np.cos(np.radians(azimuth)) * np.sin(np.radians(phi0)) *
-                                         np.cos(np.radians(theta0))) *
-                                        np.cos(np.sqrt(np.radians(alpha)**2 + np.radians(beta)**2)))
+            ky = 0.512 * np.sqrt(ke) * (-1 * np.radians(beta) * trot[0,0] * np.sinc(eta / np.pi) +
+                                        (np.radians(alpha) * trot[0,1] * np.sinc(eta / np.pi)) +
+                                        (trot[0,2] * np.cos(eta)))
         else:
             kx = None
             ky = None
@@ -242,7 +235,7 @@ class Arpes:
         return kx, ky
     @staticmethod
     def calc_inverse_rotation_matrix(phi0=0, theta0=0, azimuth=0):
-        trot_inv = np.array([[np.cos(np.radians(theta0)) * np.cos(np.radians(azimuth))   , np.cos(np.radians(phi0)) *
+        trot_inv = np.array([[np.cos(np.radians(phi0)) * np.cos(np.radians(azimuth)), np.cos(np.radians(phi0)) *
                              np.sin(np.radians(azimuth)), -1*np.sin(np.radians(phi0))],
                              [np.sin(np.radians(theta0)) * np.sin(np.radians(phi0)) * np.cos(np.radians(azimuth)) -
                               np.cos(np.radians(theta0)) * np.sin(np.radians(azimuth)),
@@ -279,12 +272,19 @@ class Arpes:
                                                                     np.cos(np.radians(azimuth))*kx))/k))
             beta = theta0 + np.degrees(np.arctan((np.cos(np.radians(azimuth))*ky + np.sin(np.radians(azimuth)) * kx)
                                                  / kz))
-        # Vertical Slit Deflectors
+        # Vertical Slit Deflectors  
         elif slit_orientation == 2:
-            trot_inv = Arpes.calc_inverse_rotation_matrix(phi0=phi0, theta0=theta0, azimuth=azimuth)
-            
-            alpha = (-180/np.pi)*np.arccos(((trot_inv[2,0] * kx) + (trot_inv[2,1] * ky) + (trot_inv[2,2] * kz))/k)*((trot_inv[0,0] * kx) + (trot_inv[0,1] * ky) + (trot_inv[0,2] * kz))/np.sqrt(k**2 - ((trot_inv[2,0] * kx) + (trot_inv[2,1] * ky)+(trot_inv[2,2] * kz))**2)
-            beta = (-180/np.pi)*np.arccos(((trot_inv[2,0] * kx) + (trot_inv[2,1] * ky) + (trot_inv[2,2] * kz)) / k)*(((trot_inv[1,0] * kx) + (trot_inv[1,1] * ky) + (trot_inv[1,2] * kz))/np.sqrt(k**2 - ((trot_inv[2,0] * kx) + (trot_inv[2,1] * ky)+(trot_inv[2,2] * kz))**2))
+            #trot_inv = Arpes.calc_inverse_rotation_matrix(phi0=phi0, theta0=theta0, azimuth=azimuth)
+            trot = Arpes.calc_rotation_matrix(phi0=phi0, theta0=theta0, azimuth=azimuth)
+            trot_inv = trot.T
+            kx_bar = trot_inv[0,0] * kx + trot_inv[0,1] * ky + trot_inv[0,2] * kz
+            ky_bar = trot_inv[1,0] * kx + trot_inv[1,1] * ky + trot_inv[1,2] * kz
+            kz_bar = trot_inv[2,0] * kx + trot_inv[2,1] * ky + trot_inv[2,2] * kz
+
+            alpha = np.degrees(((-1 * kx_bar)/np.sqrt(k**2 - kz_bar**2)) * np.arccos(kz_bar/k))
+            beta = np.degrees(((-1 * ky_bar)/np.sqrt(k**2 - kz_bar**2)) * np.arccos(kz_bar/k))
+
+
             
         # Horizontal Slit Deflectors switching ky -> kx from the Ishida paper to keep kx along the slit
         elif slit_orientation == 3:
@@ -472,7 +472,7 @@ class Arpes:
         numky = 100
         kx_new = np.sort(np.linspace(kxmin, kxmax, num=higher_dimensioned_spectra.slit.size, endpoint=True))
         ky_new = np.sort(np.linspace(kymin, kymax, num=numky, endpoint=True))
-        print(ky_new)
+        
         energy_new = np.linspace(np.nanmin(higher_dimensioned_spectra.energy.values),
                                  np.nanmax(higher_dimensioned_spectra.energy.values),
                                  num=higher_dimensioned_spectra.energy.size, endpoint=True)
