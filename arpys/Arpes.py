@@ -7,6 +7,7 @@ from scipy.interpolate import RegularGridInterpolator
 from pyimagetool import ImageTool
 import time
 
+
 def requires_ef(func):
     def func_wrapper(*args, **kwargs):
         if getattr(args[0], 'ef') is None:
@@ -14,6 +15,14 @@ def requires_ef(func):
         return func(*args, **kwargs)
 
     return func_wrapper
+
+
+def be_to_ke(hv,spectra):
+    workfunc = 4.2
+    be = np.array(spectra.energy)
+    ke = hv - workfunc + be
+    reassigned = spectra.assign_coords({'energy':ke})
+    return reassigned
 
 
 def bin_ndarray(ndarray, new_shape, operation='sum'):
