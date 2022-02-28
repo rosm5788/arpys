@@ -710,14 +710,14 @@ class Arpes:
         print(formatter.format(*vals))
 
     @staticmethod
-    def d[0] * x ** 2 + p[1] * x + p[2]
-        elif len(p) ==ewarp_curve(p, x):
+    def dewarp_curve(p, x):
         if len(p) == 1:
             return p[0]
         elif len(p) == 2:
             return p[0] * x + p[1]
         elif len(p) == 3:
-            return p 4:
+            return p[0] * x ** 2 + p[1] * x + p[2]
+        elif len(p) == 4:
             return p[0] * x ** 3 + p[1] * x ** 2 + p[2] * x + p[3]
 
     @staticmethod
