@@ -156,6 +156,8 @@ def k2beta(kx, ky, ke, phi0=0, slit_orientation=0):
     if slit_orientation == 2:
         beta = (-1 * ky / np.sqrt(k**2 - kz**2)) * np.degrees(np.arccos(kz/k))
         return beta
+
+
 @xr.register_dataarray_accessor("arpes")
 class Arpes:
     def __init__(self, xarray_obj):
@@ -242,6 +244,7 @@ class Arpes:
             print('Slit Orientation not set correctly')
 
         return kx, ky
+
     @staticmethod
     def calc_inverse_rotation_matrix(phi0=0, theta0=0, azimuth=0):
         trot_inv = np.array([[np.cos(np.radians(phi0)) * np.cos(np.radians(azimuth)), np.cos(np.radians(phi0)) *
@@ -310,7 +313,6 @@ class Arpes:
             print('slit_orientation not set properly')
 
         return alpha, beta, ke,
-
 
     @requires_ef
     def map_isoenergy_k_irreg(self, ke=None, be=None, binwidth=1, phi0=0, theta0=0, azimuth=0, slit_orientation=0):
@@ -708,14 +710,14 @@ class Arpes:
         print(formatter.format(*vals))
 
     @staticmethod
-    def dewarp_curve(p, x):
+    def d[0] * x ** 2 + p[1] * x + p[2]
+        elif len(p) ==ewarp_curve(p, x):
         if len(p) == 1:
             return p[0]
         elif len(p) == 2:
             return p[0] * x + p[1]
         elif len(p) == 3:
-            return p[0] * x ** 2 + p[1] * x + p[2]
-        elif len(p) == 4:
+            return p 4:
             return p[0] * x ** 3 + p[1] * x ** 2 + p[2] * x + p[3]
 
     @staticmethod
