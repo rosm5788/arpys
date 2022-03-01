@@ -1,6 +1,7 @@
 import numpy as np
 import xarray as xr
 from scipy.optimize import curve_fit as cfit
+import sys
 
 
 def fermi_fcn_linear_bg(x, ef, kBT, y0, a, b):
@@ -26,8 +27,9 @@ def normalize_hvscan(hvscan):
     hvscan_normed = hvscan_normed.assign_coords({'photon_energy':hvscan['photon_energy']})
     return hvscan_normed
 
-# pass in usual hvscan object (xarray with slit,energy (in binding),photon energy axes), energy_window should be a slice object to cut
-# down the energy window, initial_guess is a p0 object for scipy.optimize.curve_fit, p0=[ef,kbT,y0,a,b]
+# pass in usual hvscan object (xarray with slit,energy (in binding),photon energy axes),
+# energy_window should be a slice object to cut down the energy window,
+# initial_guess is a p0 object for scipy.optimize.curve_fit, p0=[ef,kbT,y0,a,b]
 def align_ef_hvscan(hvscan, energy_window, initial_guess):
     hv_cuts = []
     # fit each cut and align ef to 0 binding

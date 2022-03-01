@@ -43,10 +43,10 @@ def load_sls_adress_hvscan(filename):
     binding = np.linspace(scaling[2][1], binding_endpoint, num=data.shape[1])
     energy_endpoint = scaling[3][1] + data.shape[2] * scaling[3][0]
     energy = np.linspace(scaling[3][1], energy_endpoint, num=data.shape[2])
-    axis_labels = ['slit', 'binding_energy', 'photon_energy']
+    axis_labels = ['slit', 'energy', 'photon_energy']
     coords = {'slit': slit_angle,
-              'binding_energy': binding,
+              'energy': binding,
               'photon_energy': energy}
     dataarray = xr.DataArray(data, dims=axis_labels, coords=coords)
-    transposed_scan = dataarray.transpose('binding_energy', 'slit', 'photon_energy')
+    transposed_scan = dataarray.transpose('energy', 'slit', 'photon_energy')
     return transposed_scan
