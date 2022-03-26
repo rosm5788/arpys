@@ -6,6 +6,13 @@ import pandas as pd
 from .utility import find_basis
 
 
+# Boolean typed attributes break netCDF saving functionality used by some group members, this changes
+# boolean variables to strings ("True" and "False")
+def fix_boolean_attributes(xarray):
+    for attr in xarray.attrs:
+        if type(xarray.attrs[attr]) == np.bool_:
+            xarray.attrs[attr] = str(xarray.attrs[attr])
+    return xarray
 # 02/2020 and before?? Confirmed to work with data from 02/2020
 def load_ssrl_52_prehistoric(filename):
     conv = {'X': 'x', 'Z': 'z', 'ThetaX': 'slit', 'ThetaY': 'perp', 'Theta Y': 'perp', 'Kinetic Energy': 'energy'}
@@ -116,7 +123,9 @@ def load_ssrl_52(filename):
     attrs.update(dict(f['UserSettings'].attrs))
     attrs.update(dict(f['UserSettings']['AnalyserSlit'].attrs))
     f.close()
-    return xr.DataArray(vals, dims=axis_labels, coords=coords, attrs=attrs)
+    xarray = xr.DataArray(vals, dims=axis_labels, coords=coords, attrs=attrs)
+    boolean_fixed = fix_boolean_attributes(xarray)
+    return boolean_fixed
 
 def load_ssrl_52_raster(filename):
     conv = {'Kinetic Energy': 'energy', 'ThetaX': 'slit', 'ThetaY': 'perp', 'Theta Y': 'perp', 'X': 'x', 'Y': 'y', 'Z': 'z'}
