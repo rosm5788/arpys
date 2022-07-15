@@ -480,7 +480,7 @@ class Arpes:
                                                azimuth=0, slit_orientation=slit_orientation)
 
         # What even is this
-        numky = 100
+        numky = 25
         kx_new = np.sort(np.linspace(kxmin, kxmax, num=higher_dimensioned_spectra.slit.size, endpoint=True))
         ky_new = np.sort(np.linspace(kymin, kymax, num=numky, endpoint=True))
         

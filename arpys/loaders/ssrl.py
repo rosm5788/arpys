@@ -223,16 +223,24 @@ def load_ssrl_52_photonEscan(filename):
     xaxis_offsets = np.array(f['MapInfo']['Measurement:XAxis:Offset'])
     xaxis_maxs = np.array(f['MapInfo']['Measurement:XAxis:Maximum'])
     xaxis_size = counts.shape[0]
+    try:
+        yaxis_offsets = np.array(f['MapInfo']['Measurement:YAxis:Offset'])
+        yaxis_deltas = np.array(f['MapInfo']['Measurement:YAxis:Delta'])
+        yaxis_size = counts.shape[1]
+    except KeyError:
+        yaxis_size = counts.shape[1]
+        yaxis_offsets = np.repeat(f['Data']['Axes1'].attrs['Offset'], yaxis_size)
+        yaxis_deltas = np.repeat(f['Data']['Axes1'].attrs['Delta'], yaxis_size)
 
-    yaxis_offsets = np.array(f['MapInfo']['Measurement:YAxis:Offset'])
-    yaxis_deltas = np.array(f['MapInfo']['Measurement:YAxis:Delta'])
-    yaxis_size = counts.shape[1]
-
-    zaxis_offset = f['Data']['Axes2'].attrs['Offset']
-    zaxis_delta = f['Data']['Axes2'].attrs['Delta']
-    zaxis_size = counts.shape[2]
-    zaxis_max = zaxis_size*zaxis_delta + zaxis_offset
-    zaxis_coord = np.linspace(zaxis_offset, zaxis_max, num=zaxis_size)
+    if (type(f['Data']['Axes2'].attrs['Offset']) is str):
+        zaxis_coord = f['MapInfo']['Beamline:energy']
+        zaxis_size = len(zaxis_coord)
+    else:
+        zaxis_offset = f['Data']['Axes2'].attrs['Offset']
+        zaxis_delta = f['Data']['Axes2'].attrs['Delta']
+        zaxis_size = counts.shape[2]
+        zaxis_max = zaxis_size*zaxis_delta + zaxis_offset
+        zaxis_coord = np.linspace(zaxis_offset, zaxis_max, num=zaxis_size)
 
     photon_energy_scan_dataarrays = []
 
@@ -265,9 +273,16 @@ def load_ssrl_52_photonEscan(filename):
     for i in np.arange(1,len(photon_energy_scan_dataarrays)):
         interped = photon_energy_scan_dataarrays[i].interp_like(first_ek)
         aligned_eks.append(interped)
-
+    attrs = dict(f['Beamline'].attrs).copy()
+    attrs.update(dict(f['Manipulator'].attrs))
+    attrs.update(dict(f['Measurement'].attrs))
+    attrs.update(dict(f['Temperature'].attrs))
+    attrs.update(dict(f['UserSettings'].attrs))
+    attrs.update(dict(f['UserSettings']['AnalyserSlit'].attrs))
+    
     aligned_photonE_scan = xr.concat(aligned_eks,'photon_energy')
     aligned_photonE_scan = aligned_photonE_scan.assign_coords(coords={'photon_energy': zaxis_coord})
+    aligned_photonE_scan = aligned_photonE_scan.assign_attrs(attrs=attrs)
     return aligned_photonE_scan
 
 
