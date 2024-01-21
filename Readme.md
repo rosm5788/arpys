@@ -4,8 +4,8 @@ Angle resolved Python spectroscopy - Dessau Group
 
 Dependencies: 
 numpy,scipy, xarray, matplotlib, pandas, astropy (FITS), nexusformat (Diamond NEXUS files),
-PyImageTool (Kyle Gordon - New Repo: https://github.com/rosm5788/PyImageTool), and a patched version
-of igorpy from Conrad Stansbury (Lanzara Group) (New Repo: https://github.com/rosm5788/igorpy)
+pyqt (for ImageTool), PyImageTool (Kyle Gordon - New Repo: https://github.com/rosm5788/PyImageTool),
+and a patched version of igorpy from Conrad Stansbury (Lanzara Group) (New Repo: https://github.com/rosm5788/igorpy)
 
 First, create a virtual environment with at least python 3.0, and then install the aforementioned
 dependencies. (Try to install from conda forge where possible: conda install -c conda-forge)
