@@ -197,14 +197,18 @@ def read_thetax(filename):
     return thetax
 
 
-# Reads single '.txt' spin EDC, stores three separate channels in Dataset as 'spin1', 'spin2', 'spin3'
+# Reads single '.txt' spin EDC, stores three separate channels in Dataset as 'energy_readout', 'white', 'black'
+# 'white' detector can be spin-x or spin-z, depending on set up
+# 'black' detector can be spin-y or spin-z, depending on set up
+# You need to remember magnetization for data, MAGNETIZATION IS NOT SET IN METADATA
+
 def read_single_spin(filename):
     signals = read_signals(filename)
     signals = signals.T
     coord = read_coords(filename)
     thetax = read_thetax(filename)
     dataset = xr.Dataset(
-        {'spin1': ('energy', signals[0]), 'spin2': ('energy', signals[1]), 'spin3': ('energy', signals[2])},
+        {'energy_readout': ('energy', signals[0]), 'white': ('energy', signals[1]), 'black': ('energy', signals[2])},
         coords=dict(energy=coord), attrs=dict(ThetaX=thetax))
     return dataset
 
@@ -220,3 +224,17 @@ def read_spin_map(filelist):
     thetax_variable = xr.Variable('ThetaX', thetaxs)
     full_concat = xr.concat(data_array, thetax_variable)
     return full_concat
+
+# Normalize spin maps - pass in positive and negative channels explicitly - Dataset['white'] or Dataset['black']
+# Returns tuple (Iup, Idown)
+def normalize_spin_maps(positive_map, negative_map, sherman_coeff):
+
+    #align positive to negative grid
+    positive_aligned = positive_map.reindex_like(negative_map)
+
+    A = (positive_aligned - negative_map) / (positive_aligned + negative_map)
+    P = A / sherman_coeff
+    Iup = (1 + P) * (positive_aligned + negative_map) * (1/2)
+    Idown = (1 - P) * (positive_aligned + negative_map) * (1/2)
+
+    return Iup, Idown
