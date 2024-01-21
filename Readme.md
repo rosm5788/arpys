@@ -11,7 +11,8 @@ First, create a virtual environment with at least python 3.0, and then install t
 dependencies. (Try to install from conda forge where possible: conda install -c conda-forge)
 
 For PyImageTool, the installation instructions can be found at the github link above and should be
-installed in the same virtual environment as ARPYS.
+installed in the same virtual environment as ARPYS. (python setup.py install is now deprecated, instead
+navigate to main directory of PyImageTool and do 'pip install .' after activating correct conda environment)
 
 Same goes for the patched version of igorpy from Conrad Stansbury. (Necessary for loading MERLIN .pxt files,
 and other .ibw files)
