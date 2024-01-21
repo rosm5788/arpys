@@ -161,3 +161,62 @@ def load_raster_map(LOGFILE):
         xa_empty.loc[{'slit': slit, 'energy': energy, 'x': progx, 'z': progz}] = data
 
     return xa_empty
+
+# Reads the "Signal" part of the .txt. file which contains the Spin-EDCs for each detector
+def read_signals(filename):
+    with open(filename) as f:
+        iterator = 0
+        l = f.readline()
+        while (not (l.startswith('[Signal'))):
+            l = f.readline()  # Dump lines until you get to "Signal"
+        l = f.readlines()[:-1]
+
+    signals_list = []
+    for line in l:
+        signal_split = np.array(line.strip().split("    "), dtype=float)
+        signals_list.append(signal_split)
+
+    signals = np.array(signals_list)
+    return signals
+
+
+# Reads the energy scale of the Spin-EDCs which is stored as "Dimension 1 scale" in the .txt file
+def read_coords(filename):
+    with open(filename) as f:
+        for l in f:
+            if l.startswith("Dimension 1 scale"):
+                coord = np.array(l.split("=")[1].strip().split(" "), dtype=float)
+    return coord
+
+# Reads the "ThetaX" coordinate for spin mapping, scanning ThetaX will generate 2d cut
+def read_thetax(filename):
+    with open(filename) as f:
+        for l in f:
+            if l.startswith("ThetaX"):
+                thetax = float(l.split("=")[1].strip())
+    return thetax
+
+
+# Reads single '.txt' spin EDC, stores three separate channels in Dataset as 'spin1', 'spin2', 'spin3'
+def read_single_spin(filename):
+    signals = read_signals(filename)
+    signals = signals.T
+    coord = read_coords(filename)
+    thetax = read_thetax(filename)
+    dataset = xr.Dataset(
+        {'spin1': ('energy', signals[0]), 'spin2': ('energy', signals[1]), 'spin3': ('energy', signals[2])},
+        coords=dict(energy=coord), attrs=dict(ThetaX=thetax))
+    return dataset
+
+# Needs sorted filelist which is sorted by ThetaX to generate properly
+# TODO: Fix reading metadata and adding as attrs to Dataset object
+def read_spin_map(filelist):
+    thetaxs = []
+    data_array = []
+    for scan in filelist:
+        single = read_single_spin(scan)
+        thetaxs.append(single.ThetaX)
+        data_array.append(single)
+    thetax_variable = xr.Variable('ThetaX', thetaxs)
+    full_concat = xr.concat(data_array, thetax_variable)
+    return full_concat
