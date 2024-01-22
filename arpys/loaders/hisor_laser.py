@@ -1,4 +1,6 @@
 import xarray as xr
+xr.set_options(keep_attrs=True)
+
 import numpy as np
 from pathlib import Path
 import pandas as pd
@@ -132,12 +134,18 @@ def load_raster_map(LOGFILE):
 
     lowz = logfile_dataframe['progz'].min()
     highz = logfile_dataframe['progz'].max()
-    deltaz = np.abs(logfile_dataframe['progz'][sort_backward[1] + 2] - logfile_dataframe['progz'][sort_backward[1] + 1])
+    deltaz = np.round(np.abs(logfile_dataframe['progz'][sort_backward[1] + 2] - logfile_dataframe['progz'][sort_backward[1] + 1]),decimals=3)
 
-    lenz = int(np.ceil((np.abs(lowz) - np.abs(highz)) / deltaz)) + 1
+
+    rangez = np.round(np.abs(lowz) - np.abs(highz),decimals=3)
+    dividez = np.round(rangez / deltaz, decimals=3)
+    lenz = int(dividez) + 1
+    
 
     x_linspace = np.round(np.linspace(lowx, highx, num=lenx, endpoint=True), decimals=3)
     z_linspace = np.round(np.linspace(lowz, highz, num=lenz, endpoint=True), decimals=3)
+    #z_linspace = np.round(np.arange(lowz,highz,deltaz),decimals=3)
+
 
     data_array = []
     for index, row in logfile_dataframe.iterrows():
@@ -149,8 +157,8 @@ def load_raster_map(LOGFILE):
         data.attrs.update({'progx': progx, 'progy': progy, 'progz': progz})
         data_array.append(data)
 
-    slit = data_array[0].slit
-    energy = data_array[0].energy
+    slit = data_array[0].arpes.downsample({'energy':2,'slit':2}).slit
+    energy = data_array[0].arpes.downsample({'energy':2,'slit':2}).energy
     xa_empty = xr.DataArray(coords={'slit': slit, 'energy': energy, 'x': x_linspace, 'z': z_linspace},
                             dims=('slit', 'energy', 'x', 'z'))
 
@@ -158,7 +166,7 @@ def load_raster_map(LOGFILE):
     for data in data_array:
         progx = data.progx
         progz = data.progz
-        xa_empty.loc[{'slit': slit, 'energy': energy, 'x': progx, 'z': progz}] = data
+        xa_empty.loc[{'slit': slit, 'energy': energy, 'x': progx, 'z': progz}] = data.arpes.downsample({'energy':2,'slit':2})
 
     return xa_empty
 
@@ -189,6 +197,7 @@ def read_coords(filename):
     return coord
 
 # Reads the "ThetaX" coordinate for spin mapping, scanning ThetaX will generate 2d cut
+# Not actually needed anymore if attrs being read properly...
 def read_thetax(filename):
     with open(filename) as f:
         for l in f:
@@ -206,11 +215,27 @@ def read_single_spin(filename):
     signals = read_signals(filename)
     signals = signals.T
     coord = read_coords(filename)
-    thetax = read_thetax(filename)
+    #thetax = read_thetax(filename)
+    attrs = read_metadata_txt(filename)
     dataset = xr.Dataset(
         {'energy_readout': ('energy', signals[0]), 'white': ('energy', signals[1]), 'black': ('energy', signals[2])},
-        coords=dict(energy=coord), attrs=dict(ThetaX=thetax))
+        coords=dict(energy=coord), attrs=attrs)
     return dataset
+
+def read_metadata_txt(filename):
+    attrs = {}
+    with open(filename) as f:
+        for l in f:
+            if len(l) == 0:
+                continue
+            split = l.split('=')
+            if len(split) == 1:
+                continue
+            elif len(split) > 2:
+                split = [split[0], '='.join(split[1:])]
+            key, val = split
+            attrs[key] = val
+    return attrs
 
 # Needs sorted filelist which is sorted by ThetaX to generate properly
 # TODO: Fix reading metadata and adding as attrs to Dataset object
@@ -219,7 +244,7 @@ def read_spin_map(filelist):
     data_array = []
     for scan in filelist:
         single = read_single_spin(scan)
-        thetaxs.append(single.ThetaX)
+        thetaxs.append(float(single.ThetaX.strip()))
         data_array.append(single)
     thetax_variable = xr.Variable('ThetaX', thetaxs)
     full_concat = xr.concat(data_array, thetax_variable)
