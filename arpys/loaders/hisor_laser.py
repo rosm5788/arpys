@@ -140,7 +140,7 @@ def load_raster_map(LOGFILE):
     rangez = np.round(np.abs(lowz) - np.abs(highz),decimals=3)
     dividez = np.round(rangez / deltaz, decimals=3)
     lenz = int(dividez) + 1
-    
+
 
     x_linspace = np.round(np.linspace(lowx, highx, num=lenx, endpoint=True), decimals=3)
     z_linspace = np.round(np.linspace(lowz, highz, num=lenz, endpoint=True), decimals=3)
@@ -167,6 +167,36 @@ def load_raster_map(LOGFILE):
         progx = data.progx
         progz = data.progz
         xa_empty.loc[{'slit': slit, 'energy': energy, 'x': progx, 'z': progz}] = data.arpes.downsample({'energy':2,'slit':2})
+
+    return xa_empty
+
+def load_raster_1d(logfile):
+    logfilepath = Path(logfile)
+    prefix = str(logfilepath.parent)
+    logfile_dataframe = pd.read_csv(logfilepath, sep="\t", header=None, names=['filename', 'polar', 'tilt', 'progx', 'progy', 'progz', 'azimuth', 'encx', 'ency', 'encz'], index_col=False)
+    lowx = logfile_dataframe['progx'].min()
+    highx = logfile_dataframe['progx'].max()
+    deltax = logfile_dataframe['progx'][1] - logfile_dataframe['progx'][0]
+    lenx = int((highx - lowx) / deltax) + 1
+    x_linspace = np.round(np.linspace(lowx, highx, num=lenx, endpoint=True), decimals=3)
+
+    data_array = []
+    for index, row in logfile_dataframe.iterrows():
+        filename = Path(prefix) / str(row['filename'])
+        progx = row['progx']
+        progy = row['progy']
+        progz = row['progz']
+        data = load_hisor_ibw(filename)
+        data.attrs.update({'progx': progx, 'progy': progy, 'progz': progz})
+        data_array.append(data)
+
+    slit = data_array[0].arpes.downsample({'energy': 2, 'slit': 2}).slit
+    energy = data_array[0].arpes.downsample({'energy': 2, 'slit': 2}).energy
+    xa_empty = xr.DataArray(coords={'slit': slit, 'energy': energy, 'x': x_linspace},
+                            dims=('slit', 'energy', 'x'))
+    for data in data_array:
+        progx = data.progx
+        xa_empty.loc[{'slit': slit, 'energy': energy, 'x': progx}] = data.arpes.downsample({'energy':2,'slit':2})
 
     return xa_empty
 
