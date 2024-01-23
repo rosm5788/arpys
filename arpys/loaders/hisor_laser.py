@@ -264,7 +264,7 @@ def read_metadata_txt(filename):
             elif len(split) > 2:
                 split = [split[0], '='.join(split[1:])]
             key, val = split
-            attrs[key] = val
+            attrs[key] = val.strip()
     return attrs
 
 # Needs sorted filelist which is sorted by ThetaX to generate properly
@@ -279,6 +279,51 @@ def read_spin_map(filelist):
     thetax_variable = xr.Variable('ThetaX', thetaxs)
     full_concat = xr.concat(data_array, thetax_variable)
     return full_concat
+
+# Will read full set of spin map scans regardless of polarity, and will figure out putting together + and - scans
+def read_spin_map_full(filelist):
+    thetaxs_positive = []
+    thetaxs_negative = []
+    data_array_positive = []
+    data_array_negative = []
+    for scan in filelist:
+        single = read_single_spin(scan)
+        if single.polarity == "+":
+            thetaxs_positive.append(float(single.ThetaX.strip()))
+            if single.SpinChannel == "White":
+                data_array_positive.append(single['white'])
+            elif single.SpinChannel == "Black":
+                data_array_positive.append(single['black'])
+        elif single.polarity == "-":
+            thetaxs_negative.append(float(single.ThetaX.strip()))
+            if single.SpinChannel == "White":
+                data_array_negative.append(single['white'])
+            elif single.SpinChannel == "Black":
+                data_array_negative.append(single['black'])
+        else:
+            print("polarity wasn't read, please check if you are reading 'modified' files")
+
+    if len(thetaxs_positive) > 0 and len(thetaxs_negative) > 0:
+        thetax_variable_positive = xr.Variable('ThetaX', thetaxs_positive)
+        concat_positive = xr.concat(data_array_positive, thetax_variable_positive)
+        thetax_variable_negative = xr.Variable('ThetaX', thetaxs_negative)
+        concat_negative = xr.concat(data_array_negative, thetax_variable_negative)
+        full_dataset = xr.Dataset(data_vars=dict(positive=concat_positive,
+                                                 negative=concat_negative))
+
+    elif len(thetaxs_positive) > 0 and len(thetaxs_negative) == 0:
+        thetax_variable_positive = xr.Variable('ThetaX', thetaxs_positive)
+        concat_positive = xr.concat(data_array_positive, thetax_variable_positive)
+        full_dataset = xr.Dataset(data_vars=dict(positive=concat_positive))
+
+    elif len(thetaxs_negative) > 0 and len(thetaxs_positive) == 0:
+        thetax_variable_negative = xr.Variable('ThetaX', thetaxs_negative)
+        concat_negative = xr.concat(data_array_negative, thetax_variable_negative)
+        full_dataset = xr.Dataset(data_vars=dict(negative=concat_negative))
+    else:
+        print('by jove everything be empty')
+        full_dataset = 0
+    return full_dataset
 
 # Normalize spin maps - pass in positive and negative channels explicitly - Dataset['white'] or Dataset['black']
 # Returns tuple (Iup, Idown)
