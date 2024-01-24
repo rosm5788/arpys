@@ -4,6 +4,7 @@ xr.set_options(keep_attrs=True)
 import numpy as np
 from pathlib import Path
 import pandas as pd
+from io import StringIO
 
 try:
     import igor.binarywave as igor
@@ -209,12 +210,19 @@ def read_signals(filename):
             l = f.readline()  # Dump lines until you get to "Signal"
         l = f.readlines()[:-1]
 
-    signals_list = []
+    one_string = ""
     for line in l:
-        signal_split = np.array(line.strip().split("    "), dtype=float)
-        signals_list.append(signal_split)
+        one_string = one_string + line + '\n'
 
-    signals = np.array(signals_list)
+    #signals_list = []
+    #for line in l:
+    #    signal_split = np.array(line.strip().split("    "), dtype=float)
+    #    signals_list.append(signal_split)
+
+    #signals = np.array(signals_list)
+    stringio = StringIO(one_string)
+    signals_pd = pd.read_csv(stringio, delim_whitespace=True,header=None, names=['energy', 'white', 'black'], index_col=False)
+    signals = signals_pd.to_numpy()
     return signals
 
 
