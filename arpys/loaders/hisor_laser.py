@@ -8,6 +8,7 @@ from io import StringIO
 
 try:
     import igor.binarywave as igor
+    import igor.igorpy as igorpy
 except ImportError as e:
     import warnings
     warnings.warn('You cannot import HiSOR data without igor module')
@@ -40,7 +41,26 @@ def load_wave_note(note):
         wavenote_dict[key] = val
     return wavenote_dict
 
+def load_hisor_pxt_single(filename):
+    file = igorpy.load(filename, initial_byte_order='<')
+    igor_wave = file.children[0]
 
+    axis_labels = ['energy','slit']
+    coords = dict(zip(axis_labels, igor_wave.axis))
+    notes = list(filter(None, str(igor_wave.notes).replace("\\r", "\\n").split("\\n")))[1:-2]
+    note_dictionary = []
+    for note in notes:
+        line = note.split("=")
+        if len(line) == 2:
+            note_dictionary.append((line[0], line[1]))
+    note_dictionary = dict(note_dictionary)
+
+    return xr.DataArray(
+        igor_wave.data,
+        coords=coords,
+        dims=axis_labels,
+        attrs=note_dictionary
+    )
 # REGION_INI refers to the ini file with "Spectrum_" prefix, MAIN_INI does not have the prefix. This is from unzipped
 # SES FS Maps (.bin and .ini files)
 def load_ses_map(REGION_INI, MAIN_INI, FS_PATH):
