@@ -130,8 +130,10 @@ def load_raster_map(LOGFILE):
     highx = logfile_dataframe['progx'].max()
 
     sort_backward = np.lexsort((logfile_dataframe['progx'], logfile_dataframe['progz']))
-    deltax = logfile_dataframe['progx'][sort_backward[1]] - logfile_dataframe['progx'][sort_backward[0]]
-    lenx = int((highx - lowx) / deltax) + 1
+    deltax = np.round(logfile_dataframe['progx'][sort_backward[1]] - logfile_dataframe['progx'][sort_backward[0]],decimals=3)
+    rangex = np.round(highx - lowx,decimals=3)
+    dividex = np.round(rangex/deltax,decimals=3)
+    lenx = int(dividex) + 1
 
     lowz = logfile_dataframe['progz'].min()
     highz = logfile_dataframe['progz'].max()
