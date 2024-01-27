@@ -355,6 +355,49 @@ def read_spin_map_full(filelist):
         full_dataset = 0
     return full_dataset
 
+def read_spin_map_y_full(filelist):
+    thetays_positive = []
+    thetays_negative = []
+    data_array_positive = []
+    data_array_negative = []
+    for scan in filelist:
+        single = read_single_spin(scan)
+        if single.polarity == "+":
+            thetays_positive.append(float(single.ThetaY.strip()))
+            if single.SpinChannel == "White":
+                data_array_positive.append(single['white'])
+            elif single.SpinChannel == "Black":
+                data_array_positive.append(single['black'])
+        elif single.polarity == "-":
+            thetays_negative.append(float(single.ThetaY.strip()))
+            if single.SpinChannel == "White":
+                data_array_negative.append(single['white'])
+            elif single.SpinChannel == "Black":
+                data_array_negative.append(single['black'])
+        else:
+            print("polarity wasn't read, please check if you are reading 'modified' files")
+
+    if len(thetays_positive) > 0 and len(thetays_negative) > 0:
+        thetay_variable_positive = xr.Variable('ThetaY', thetays_positive)
+        concat_positive = xr.concat(data_array_positive, thetay_variable_positive)
+        thetay_variable_negative = xr.Variable('ThetaY', thetays_negative)
+        concat_negative = xr.concat(data_array_negative, thetay_variable_negative)
+        full_dataset = xr.Dataset(data_vars=dict(positive=concat_positive,
+                                                 negative=concat_negative))
+
+    elif len(thetays_positive) > 0 and len(thetays_negative) == 0:
+        thetay_variable_positive = xr.Variable('ThetaY', thetays_positive)
+        concat_positive = xr.concat(data_array_positive, thetay_variable_positive)
+        full_dataset = xr.Dataset(data_vars=dict(positive=concat_positive))
+
+    elif len(thetays_negative) > 0 and len(thetays_positive) == 0:
+        thetay_variable_negative = xr.Variable('ThetaY', thetays_negative)
+        concat_negative = xr.concat(data_array_negative, thetay_variable_negative)
+        full_dataset = xr.Dataset(data_vars=dict(negative=concat_negative))
+    else:
+        print('by jove everything be empty')
+        full_dataset = 0
+    return full_dataset
 # Normalize spin maps - pass in positive and negative channels explicitly - Dataset['white'] or Dataset['black']
 # Returns tuple (Iup, Idown)
 def normalize_spin_maps(positive_map, negative_map, sherman_coeff):
