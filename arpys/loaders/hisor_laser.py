@@ -436,6 +436,64 @@ def sort_spin_filelist(filelist, direction):
     filenames = np.concatenate((positive_filenames_sorted,negative_filenames_sorted))
     return filenames
 
+
+def read_spin_map_4(filelist, direction):
+    thetas = []
+    for file in filelist:
+        attrs = read_metadata_txt(file)
+        if direction == 'ThetaX':
+            thetas.append(float(attrs['ThetaX']))
+        if direction == 'ThetaY':
+            thetas.append(float(attrs['ThetaY']))
+    thetas_unique = np.unique(thetas)
+
+    positive_data = []
+    negative_data = []
+    for unique_theta in thetas_unique:
+        files_for_theta = []
+        for file in filelist:
+            attrs = read_metadata_txt(file)
+            if direction == 'ThetaX':
+                if float(attrs['ThetaX']) == unique_theta:
+                    files_for_theta.append(file)
+            if direction == 'ThetaY':
+                if float(attrs['ThetaY']) == unique_theta:
+                    files_for_theta.append(file)
+
+        data_array_positive = []
+        data_array_negative = []
+        for file in files_for_theta:
+            single = read_single_spin(file)
+            if single.polarity == "+":
+                if single.SpinChannel == "White":
+                    data_array_positive.append(single['white'])
+                elif single.SpinChannel == "Black":
+                    data_array_positive.append(single['black'])
+            elif single.polarity == "-":
+                if single.SpinChannel == "White":
+                    data_array_negative.append(single['white'])
+                elif single.SpinChannel == "Black":
+                    data_array_negative.append(single['black'])
+            else:
+                print("polarity wasn't read, please check if you are reading 'modified' files")
+        data_positive = sum(data_array_positive)
+        data_negative = sum(data_array_negative)
+        positive_data.append(data_positive)
+        negative_data.append(data_negative)
+
+    theta_variable = 0
+    if direction == 'ThetaX':
+        theta_variable = xr.Variable('ThetaX',thetas_unique)
+    elif direction == 'ThetaY':
+        theta_variable = xr.Variable('ThetaY',thetas_unique)
+
+    concat_positive = xr.concat(positive_data,theta_variable)
+    concat_negative = xr.concat(negative_data,theta_variable)
+
+    return xr.Dataset(data_vars=dict(positive=concat_positive,
+                                     negative=concat_negative))
+
+
 # Normalize spin maps - pass in positive and negative channels explicitly - Dataset['white'] or Dataset['black']
 # Returns tuple (Iup, Idown)
 def normalize_spin_maps(positive_map, negative_map, sherman_coeff):
