@@ -398,6 +398,44 @@ def read_spin_map_y_full(filelist):
         print('by jove everything be empty')
         full_dataset = 0
     return full_dataset
+
+# Will sort filelist for spin maps by reading metadata, and based on the direction of cut ('ThetaX' or 'ThetaY')
+def sort_spin_filelist(filelist, direction):
+    thetas_positive = []
+    thetas_negative = []
+    positive_filenames = []
+    negative_filenames = []
+    for file in filelist:
+        attrs = read_metadata_txt(file)
+        if direction == 'ThetaX':
+            if attrs['polarity'] == '+':
+                positive_filenames.append(file)
+                thetas_positive.append(attrs['ThetaX'])
+            if attrs['polarity'] == '-':
+                negative_filenames.append(file)
+                thetas_negative.append(attrs['ThetaX'])
+        elif direction == 'ThetaY':
+            if attrs['polarity'] == '+':
+                positive_filenames.append(file)
+                thetas_positive.append(attrs['ThetaY'])
+            if attrs['polarity'] == '-':
+                negative_filenames.append(file)
+                thetas_negative.append(attrs['ThetaY'])
+        else:
+            print('direction not entered correctly')
+
+    ## Sort the damn things in ascending order of theta
+    positive_filenames = np.array(positive_filenames)
+    negative_filenames = np.array(negative_filenames)
+
+    thetas_positive = np.array(thetas_positive, dtype=float)
+    thetas_negative = np.array(thetas_negative, dtype=float)
+
+    positive_filenames_sorted = positive_filenames[np.argsort(thetas_positive)]
+    negative_filenames_sorted = negative_filenames[np.argsort(thetas_negative)]
+    filenames = np.concatenate((positive_filenames_sorted,negative_filenames_sorted))
+    return filenames
+
 # Normalize spin maps - pass in positive and negative channels explicitly - Dataset['white'] or Dataset['black']
 # Returns tuple (Iup, Idown)
 def normalize_spin_maps(positive_map, negative_map, sherman_coeff):
