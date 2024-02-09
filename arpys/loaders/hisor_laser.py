@@ -5,6 +5,8 @@ import numpy as np
 from pathlib import Path
 import pandas as pd
 from io import StringIO
+import io
+from zipfile import ZipFile
 
 try:
     import igor.binarywave as igor
@@ -124,11 +126,104 @@ def load_ses_map(REGION_INI, MAIN_INI, FS_PATH):
     attrs = read_main_ini(MAIN_INI)
 
     # Reshape the binary file into the correct shape (this may break on other sets of data, watch out)
-    binaryfile = np.fromfile(FS_PATH,dtype=np.float32)
+    binaryfile = np.fromfile(FS_PATH, dtype=np.float32)
     data = np.reshape(binaryfile,(widthnum, heightnum, depthnum),order='F')
 
     return xr.DataArray(data,coords={'slit':slit,'energy':energy,'perp':perp},dims=('energy','slit','perp'),attrs=attrs)
 
+#Loads SES map directly from .zip file into memory, no need to extract .zip files first into folders
+# USE THIS WHEN READING FERMI MAPS
+def load_ses_map_zip(zipfile):
+    input_zip = ZipFile(zipfile)
+    _region_ini = ""
+    _fs_path = ""
+    _main_ini = ""
+    for name in input_zip.namelist():
+        if name.endswith('.bin'):
+            _fs_path = name
+        elif name.startswith('Spectrum') and name.endswith('.ini'):
+            _region_ini = name
+        else:
+            _main_ini = name
+
+
+    #Read REGION_INI
+    with io.TextIOWrapper(input_zip.open(_region_ini), encoding="utf-8") as region_ini:
+        widthoffset = 0
+        for line in region_ini:
+            l = line
+            match l:
+                case str(x) if x.startswith("widthoffset="):
+                    widthoffset = float(x.split("=")[1])
+                case str(x) if x.startswith("widthdelta="):
+                    widthdelta = float(x.split("=")[1])
+                case str(x) if x.startswith("width="):
+                    widthnum = int(x.split("=")[1])
+                case str(x) if x.startswith("heightoffset="):
+                    heightoffset = float(x.split("=")[1])
+                case str(x) if x.startswith("heightdelta="):
+                    heightdelta = float(x.split("=")[1])
+                case str(x) if x.startswith("height="):
+                    heightnum = int(x.split("=")[1])
+                case str(x) if x.startswith("depthoffset="):
+                    depthoffset = float(x.split("=")[1])
+                case str(x) if x.startswith("depthdelta="):
+                    depthdelta = float(x.split("=")[1])
+                case str(x) if x.startswith("depth="):
+                    depthnum = int(x.split("=")[1])
+                case str(x) if x.startswith("widthlabel="):
+                    widthlabel = str(x.split("=")[1].strip())
+                case str(x) if x.startswith("heightlabel="):
+                    heightlabel = str(x.split("=")[1].strip())
+                case str(x) if x.startswith("depthlabel="):
+                    depthlabel = str(x.split("=")[1]).strip()
+
+    match str(widthlabel):
+        case "Energy [eV]":
+            energy = np.linspace(widthoffset, widthoffset + widthnum * widthdelta, num=widthnum, endpoint=False)
+        case "Thetax [deg]":
+            slit = np.linspace(widthoffset, widthoffset + widthnum * widthdelta, num=widthnum, endpoint=False)
+        case "Thetay [deg]":
+            perp = np.linspace(widthoffset, widthoffset + widthnum * widthdelta, num=widthnum, endpoint=False)
+
+    match heightlabel:
+        case "Energy [eV]":
+            energy = np.linspace(heightoffset, heightoffset + heightnum * heightdelta, num=heightnum, endpoint=False)
+        case "Thetax [deg]":
+            slit = np.linspace(heightoffset, heightoffset + heightnum * heightdelta, num=heightnum, endpoint=False)
+        case "Thetay [deg]":
+            perp = np.linspace(heightoffset, heightoffset + heightnum * heightdelta, num=heightnum, endpoint=False)
+
+    match depthlabel:
+        case "Energy [eV]":
+            energy = np.linspace(depthoffset, depthoffset + depthnum * depthdelta, num=depthnum, endpoint=False)
+        case "Thetax [deg]":
+            slit = np.linspace(depthoffset, depthoffset + depthnum * depthdelta, num=depthnum, endpoint=False)
+        case "Thetay [deg]":
+            perp = np.linspace(depthoffset, depthoffset + depthnum * depthdelta, num=depthnum, endpoint=False)
+
+    # Read MAIN_INI for attributes and metadata
+    attrs = read_main_ini_zipped(input_zip, _main_ini)
+
+    # Reshape the binary file into the correct shape (this may break on other sets of data, watch out)
+    with input_zip.open(_fs_path, mode='r') as FS_PATH:
+        data = FS_PATH.read()
+        binaryfile = np.frombuffer(data, dtype=np.float32)
+
+    data = np.reshape(binaryfile,(widthnum, heightnum, depthnum),order='F')
+
+    return xr.DataArray(data,coords={'slit':slit,'energy':energy,'perp':perp},dims=('energy','slit','perp'),attrs=attrs)
+
+def read_main_ini_zipped(zipfile, MAIN_INI):
+    attrs = {}
+    with io.TextIOWrapper(zipfile.open(MAIN_INI), encoding="utf-8") as main_ini:
+        for line in main_ini:
+            split = line.split("=")
+            if len(split) > 1:
+                key = split[0]
+                value = split[1]
+                attrs[key] = value
+    return attrs
 
 def read_main_ini(MAIN_INI):
     attrs = {}
@@ -437,6 +532,8 @@ def sort_spin_filelist(filelist, direction):
     return filenames
 
 
+# USE THIS WHEN READING SPIN MAPS FROM FOLDERS (will handle +- or +--+ ordering smoothly)
+# Will also return spin maps in correct dimension ordering to handle k-conversion properly
 def read_spin_map_4(filelist, direction):
     thetas = []
     for file in filelist:
@@ -481,20 +578,16 @@ def read_spin_map_4(filelist, direction):
         positive_data.append(data_positive)
         negative_data.append(data_negative)
 
-    theta_variable = 0
-    if direction == 'ThetaX':
-        theta_variable = xr.Variable('ThetaX',thetas_unique)
-    elif direction == 'ThetaY':
-        theta_variable = xr.Variable('ThetaY',thetas_unique)
+    theta_variable = xr.Variable('slit', thetas_unique)
 
-    concat_positive = xr.concat(positive_data,theta_variable)
-    concat_negative = xr.concat(negative_data,theta_variable)
-
+    concat_positive = xr.concat(positive_data, theta_variable)
+    concat_negative = xr.concat(negative_data, theta_variable)
+    # Ensure that dataset is ordered energy, slit for compatibility with k-conversion codes etc.
     return xr.Dataset(data_vars=dict(positive=concat_positive,
-                                     negative=concat_negative))
+                                     negative=concat_negative)).transpose('energy', 'slit')
 
 
-# Normalize spin maps - pass in positive and negative channels explicitly - Dataset['white'] or Dataset['black']
+# Normalize spin maps - pass in positive and negative channels explicitly - Dataset['positive'] or Dataset['negative']
 # Returns tuple (Iup, Idown)
 def normalize_spin_maps(positive_map, negative_map, sherman_coeff):
 
