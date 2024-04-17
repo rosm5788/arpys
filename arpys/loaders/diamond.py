@@ -6,7 +6,11 @@ import xarray as xr
 def load_diamond_consolidated(filename):
     f = nxload(filename)
     counts = np.array(f.entry1.instrument.analyser.data)
-    sapolar = np.array(f.entry1.instrument.manipulator.sapolar)
+    if("sapolar" in f.entry1.analyser.keys()):
+        sapolar = np.array(f.entry1.instrument.manipulator.sapolar)
+    elif("deflector_x" in f.entry1.analyser.keys()):
+        sapolar = np.array(f.entry1.instrument.deflector_x.deflector_x)
+
     energies = np.array(f.entry1.instrument.analyser.energies)
     slit_angle = np.array(f.entry1.instrument.analyser.angles)
 
@@ -25,7 +29,25 @@ def load_diamond_consolidated(filename):
     metadata = read_metadata(f)
     return xr.DataArray(vals, dims=axis_labels, coords=coords, attrs=metadata)
 
+def load_diamond_hvscan(filename):
+    f = nxload(filename)
+    counts = np.array(f.entry1.instrument.analyser.data)
+    energies = np.array(f.entry1.instrument.analyser.energies)
+    slit_angle = np.array(f.entry1.instrument.analyser.angles)
+    hv_energies = np.array(f.entry1.instrument.monochromator.energy)
 
+    # Making an assumption here that the energy window for each slice is the same in binding energy, that there is nothing
+    # funky happening with the kinetic energies sliding more or less than the hv steps within the scan
+    binding_energies = energies[0] - hv_energies[0] + 5.2
+
+    axis_labels = ['photon_energy', 'slit', 'binding']
+    vals = np.copy(counts)
+    coords = {'photon_energy': hv_energies, 'slit': slit_angle, 'binding': binding_energies}
+
+    metadata = read_metadata(f)
+    return xr.DataArray(vals, dims=axis_labels, coords=coords, attrs=metadata)
+
+#DON'T USE, THIS IS HERE FOR POSTERITY'S SAKE, USE CONSOLIDATED LOADER FOR ALL FUTURE DATA
 def load_diamond_fermi(filename):
     f = nxload(filename)
     counts = np.array(f.entry1.instrument.analyser.data)
@@ -40,7 +62,7 @@ def load_diamond_fermi(filename):
 
     return xr.DataArray(vals, dims=axis_labels, coords=coords)
 
-
+#DON'T USE, THIS IS HERE FOR POSTERITY'S SAKE, USE CONSOLIDATED LOADER FOR ALL FUTURE DATA
 def load_diamond_single(filename):
     f = nxload(filename)
     counts = np.array(f.entry1.instrument.analyser.data)
@@ -85,7 +107,12 @@ def read_metadata(nxobject):
 
     # exposure settings for conversion to count rate (probably not valid for fixed mode scans, use with caution)
     acq_mode = nxobject.entry1.instrument.analyser.acquisition_mode.nxvalue
-    energy_region_size = nxobject.entry1.instrument.analyser.cps_region_size.nxvalue[1]
+    try:
+        energy_region_size = nxobject.entry1.instrument.analyser.cps_region_size.nxvalue[1]
+    except:
+        print("File taken post 2023? Need different region size metadata tag")
+        energy_region_size = nxobject.entry1.instrument.analyser.region_size.nxvalue[1]
+
     dwell_time = nxobject.entry1.instrument.analyser.time_for_frames.nxvalue
     sweeps = nxobject.entry1.instrument.analyser.number_of_iterations.nxvalue
 
@@ -114,6 +141,8 @@ def read_metadata(nxobject):
 
 
 # Convert Diamond spectra counts (2d spectra only) to count rate
+# Not tested for newer data (post 2020), use with caution / make considerate changes for new datasets with different
+# Metadata tags
 def convert_to_countrate(dataxarray):
     total_time = dataxarray.attrs['Dwell Time'] * dataxarray.attrs['Energy Region Size'] * dataxarray.attrs['Sweeps']
     count_rate_xarray = dataxarray / total_time
