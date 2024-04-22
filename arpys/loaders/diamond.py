@@ -9,11 +9,9 @@ def load_diamond_consolidated(filename):
     # mechanical map perp stored in scan_group.sapolar
     if("scan_group" in f.entry1.instrument.keys()):
         sapolar = np.array(f.entry1.instrument.scan_group.sapolar)
-        print("mechanical map, sapolar: ", sapolar)
     #otherwise, might be a deflector map
     elif("deflector_x" in f.entry1.analyser.keys()):
         sapolar = np.array(f.entry1.instrument.deflector_x.deflector_x)
-        print("deflector map. sapolar: ", sapolar)
     else: # must be a 2D scan if not either of above
         sapolar = np.array(f.entry1.instrument.manipulator.sapolar)
 
@@ -26,7 +24,6 @@ def load_diamond_consolidated(filename):
         vals = np.copy(counts[0, :, :])
         coords = {'slit': slit_angle, 'energy': energies}
     else: #if not single valued, it holds the perp coordinates
-        print("not 2D, hopefully its a map, here's sapolar", sapolar)
         vals = np.copy(counts)
         coords = {'perp': sapolar, 'slit': slit_angle, 'energy': energies}
         # append perp label to beginning of axis_labels if the file is a fermi map
