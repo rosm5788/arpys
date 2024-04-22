@@ -6,26 +6,31 @@ import xarray as xr
 def load_diamond_consolidated(filename):
     f = nxload(filename)
     counts = np.array(f.entry1.instrument.analyser.data)
-    if("sapolar" in f.entry1.analyser.keys()):
-        sapolar = np.array(f.entry1.instrument.manipulator.sapolar)
+    # mechanical map perp stored in scan_group.sapolar
+    if("scan_group" in f.entry1.instrument.keys()):
+        sapolar = np.array(f.entry1.instrument.scan_group.sapolar)
+        print("mechanical map, sapolar: ", sapolar)
+    #otherwise, might be a deflector map
     elif("deflector_x" in f.entry1.analyser.keys()):
         sapolar = np.array(f.entry1.instrument.deflector_x.deflector_x)
+        print("deflector map. sapolar: ", sapolar)
+    else: # must be a 2D scan if not either of above
+        sapolar = np.array(f.entry1.instrument.manipulator.sapolar)
 
     energies = np.array(f.entry1.instrument.analyser.energies)
     slit_angle = np.array(f.entry1.instrument.analyser.angles)
-
     axis_labels = ['slit', 'energy']
-
-    if len(sapolar) == 1:  # alternatively, if counts.shape[0] == 1
+        
+    # 2D scans have single-valued sapolar
+    if(len(sapolar) == 1):
         vals = np.copy(counts[0, :, :])
         coords = {'slit': slit_angle, 'energy': energies}
-
-    else:
+    else: #if not single valued, it holds the perp coordinates
+        print("not 2D, hopefully its a map, here's sapolar", sapolar)
         vals = np.copy(counts)
         coords = {'perp': sapolar, 'slit': slit_angle, 'energy': energies}
         # append perp label to beginning of axis_labels if the file is a fermi map
         axis_labels.insert(0, 'perp')
-
     metadata = read_metadata(f)
     return xr.DataArray(vals, dims=axis_labels, coords=coords, attrs=metadata)
 
