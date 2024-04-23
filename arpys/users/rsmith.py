@@ -1,5 +1,4 @@
 # Robert's functions
-
 import xarray as xr
 
 # used to normalize each perp. cut of a polar map
