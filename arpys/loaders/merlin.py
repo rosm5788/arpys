@@ -81,6 +81,10 @@ def load_merlin_pxt_photonescan_noalign(filenames):
 
     total_scan = xr.concat(scans_interped, 'photon_energy')
     total_scan = total_scan.assign_coords({'photon_energy': sorted_photon_energies})
+    
+    #added since our k-conv functions expect binding energy for hv scans,
+    #and it seems like merlin aligns along ef=0, so data is already in binding
+    total_scan = total_scan.rename({'energy':'binding'})
     return total_scan
 
 
@@ -122,6 +126,9 @@ def load_merlin_pxt_photonescan(filenames):
     total_scan = xr.concat(scans_interped, 'photon_energy')
     total_scan = total_scan.assign_coords({'photon_energy':sorted_photon_energies})
 
+    #added since our k-conv functions expect binding energy for hv scans,
+    #and it seems like merlin aligns along ef=0, so data is already in binding
+    total_scan = total_scan.rename({'energy':'binding'})
     return total_scan
 
 

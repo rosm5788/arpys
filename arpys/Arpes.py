@@ -522,7 +522,7 @@ class Arpes:
     # Kz maps should always be in binding energy, will need to shift off using a fixed work-function to recover
     # kinetic energy for k conversion
     def map_isoenergy_kz_k_irreg(self, be=0, workfunc=4.2, binwidth=0.1, phi0=0, inner_potential=15):
-        iso_e = self._obj.arpes.sel_kinetic(be-binwidth, be+binwidth).sum('energy')
+        iso_e = self._obj.sel(binding=slice(be-binwidth, be+binwidth)).sum('binding')
         T, F = np.meshgrid(iso_e.arpes.photon_energy, iso_e.arpes.slit, indexing='ij')
         kx = 0.512 * np.sqrt(be + T - workfunc) * np.sin(np.pi / 180 * (F - phi0))
         kz = 0.512 * np.sqrt((be + T - workfunc)*np.cos(np.pi/180 * (F-phi0))**2 + inner_potential)
@@ -532,11 +532,11 @@ class Arpes:
 
     # Currently can only take spectra at gamma point (in angle space) before k-converting
     def spectra_kz_k_irreg(self, binwidth=1, workfunc=4.2, phi0=0, inner_potential=15):
-        cut = self._obj.arpes.sel_slit(phi0-binwidth, phi0+binwidth).sum('slit')
-        F, BE = np.meshgrid(self._obj.arpes.photon_energy, self._obj.arpes.energy, indexing='ij')
+        cut = self._obj.sel(slit=slice(phi0-binwidth, phi0+binwidth)).sum('slit')
+        F, BE = np.meshgrid(self._obj.arpes.photon_energy, self._obj.binding.values, indexing='ij')
         kz = 0.512 * np.sqrt((F + BE - workfunc) + inner_potential)
 
-        cut = cut.assign_coords({'kz': (('photon_energy', 'energy'), kz)})
+        cut = cut.assign_coords({'kz': (('photon_energy', 'binding'), kz)})
         return cut
 
     @requires_ef
