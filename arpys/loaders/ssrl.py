@@ -283,6 +283,8 @@ def load_ssrl_52_photonEscan(filename):
     aligned_photonE_scan = xr.concat(aligned_eks,'photon_energy')
     aligned_photonE_scan = aligned_photonE_scan.assign_coords(coords={'photon_energy': zaxis_coord})
     aligned_photonE_scan = aligned_photonE_scan.assign_attrs(attrs=attrs)
+    # Robert's update: renaming energy to binding as coord label for consistency
+    aligned_photonE_scan = aligned_photonE_scan.rename({"energy":"binding"})
     return aligned_photonE_scan
 
 
