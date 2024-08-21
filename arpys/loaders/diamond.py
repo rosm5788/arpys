@@ -118,6 +118,8 @@ def read_metadata(nxobject):
     dwell_time = nxobject.entry1.instrument.analyser.time_for_frames.nxvalue
     sweeps = nxobject.entry1.instrument.analyser.number_of_iterations.nxvalue
 
+    pass_energy = nxobject.entry1.instrument.analyser.pass_energy.nxvalue
+
     metadata['x'] = x
     metadata['y'] = y
     metadata['z'] = z
@@ -138,6 +140,7 @@ def read_metadata(nxobject):
     metadata['Energy Region Size'] = energy_region_size
     metadata['Dwell Time'] = dwell_time
     metadata['Sweeps'] = sweeps
+    metadata['pass energy'] = pass_energy
 
     return metadata
 

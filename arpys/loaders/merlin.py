@@ -32,6 +32,10 @@ def load_merlin_pxt_single(filename):
             note_dictionary.append((line[0], line[1]))
     note_dictionary = dict(note_dictionary)
 
+    #temporary change to flip coordinates, currently, energies below Ef are positive...
+    flipped_energies = coords['energy']*(-1) 
+    coords['energy'] = flipped_energies
+
     return xr.DataArray(
         igor_wave.data,
         coords=coords,
@@ -60,7 +64,9 @@ def load_merlin_pxt_photonescan_noalign(filenames):
         one_cut = load_merlin_pxt_single(filename)
         one_cut_hv = float(one_cut.attrs['BL Energy'])
 
-        one_cut_be = -1*one_cut.arpes.energy
+        # i removed the -1 factor, since i flipped the coordinates in
+        # the single cut loader
+        one_cut_be = one_cut.arpes.energy
         one_cut = one_cut.assign_coords({'energy':one_cut_be})
 
         singlescan_xarrays.append(one_cut)
@@ -81,7 +87,7 @@ def load_merlin_pxt_photonescan_noalign(filenames):
 
     total_scan = xr.concat(scans_interped, 'photon_energy')
     total_scan = total_scan.assign_coords({'photon_energy': sorted_photon_energies})
-    
+
     #added since our k-conv functions expect binding energy for hv scans,
     #and it seems like merlin aligns along ef=0, so data is already in binding
     total_scan = total_scan.rename({'energy':'binding'})
@@ -100,7 +106,8 @@ def load_merlin_pxt_photonescan(filenames):
         one_cut_be = one_cut.arpes.energy
 
         # Merlin uses positive binding energy to mean deeper in valence
-        one_cut_ke = -1*one_cut_be + one_cut_hv - 4.2 #Fixed workfunction offset, won't introduce much error
+        # robert changed this already in the load_single func
+        one_cut_ke = one_cut_be + one_cut_hv - 4.2 #Fixed workfunction offset, won't introduce much error
         one_cut = one_cut.assign_coords({'energy':one_cut_ke})
 
         rough_ef = one_cut_hv - 4.2
