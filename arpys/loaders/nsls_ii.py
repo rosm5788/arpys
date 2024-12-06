@@ -41,7 +41,7 @@ def load_hvscan(filelist,attempt_alignment=False):
     #might negate some mono drift 
     if attempt_alignment == True:
         for cut in binding_list:
-            new_ef = cut.sel(energy=slice(-1,1)).arpes.guess_ef()
+            new_ef = cut.sel(energy=slice(-1,1),slit=slice(-10,10)).arpes.guess_ef()
             cut = cut.assign_coords(energy = cut.energy.values - new_ef)
 
     hvscan = xr.concat(binding_list,dim='photon_energy')
