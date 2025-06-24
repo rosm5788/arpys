@@ -561,9 +561,9 @@ class Arpes:
 
     def set_gamma(self, slit=None, perp=None):
         if slit is not None:
-            self._obj.coords['slit'].values -= slit
+            self._obj.coords.update({'slit':self._obj.coords['slit'].values-slit})
         if perp is not None:
-            self._obj.coords['perp'].values -= perp
+            self._obj.coords.update({'perp':self._obj.coords['perp'].values-perp})
 
     def guess_high_symmetry(self):
         x = self._obj.values
