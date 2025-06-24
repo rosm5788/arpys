@@ -4,6 +4,30 @@ from astropy.io import fits
 import arpys
 
 
+#For loading 1D XPS data
+def load_maestro_fits_XPS(filename):
+    with fits.open(filename) as fits_object:
+        data_type = fits_object[1].data.dtype.names[-1]
+        data = fits_object[1].data[data_type].T
+        axis_length = len(data)
+
+        tfields = str(fits_object[1].header['TFIELDS'])
+        axis_names = fits_object[1].header['TDESC' + tfields]
+        initial_axis_value = float(fits_object[1].header['TRVAL' + tfields])
+        axis_delta = float(fits_object[1].header['TDELT' + tfields])
+
+        axis_name = axis_names.replace("(","").replace(")","").split(",")[0]
+        conv = {'pixel': 'slit', 'eV': 'energy', 'pixels': 'slit'}
+        axis_name_converted = conv[axis_name] # I figure it's best not to hardcode calling it energy just in case
+        dims = [axis_name_converted]
+        
+        coords = {}
+        axis_full = np.linspace(initial_axis_value, axis_length*axis_delta + initial_axis_value, num=axis_length)
+        coords[axis_name_converted] = axis_full
+
+        attrs = read_maestro_fits_attrs(fits_object)
+        return xr.DataArray(data[:,0], dims=dims, coords=coords, attrs=attrs)
+
 # For loading a single cut, NOT FOR LOADING FERMI MAPS OR PHOTON ENERGY SCANS
 def load_maestro_fits_single(filename):
     with fits.open(filename) as fits_object:
@@ -12,7 +36,11 @@ def load_maestro_fits_single(filename):
 
         tfields = str(fits_object[1].header['TFIELDS'])
         axis_names = fits_object[1].header['TDESC' + tfields]
-        axis_lengths = eval(fits_object[1].header['TDIM' + tfields])
+        try:
+            axis_lengths = eval(fits_object[1].header['TDIM' + tfields])
+        except KeyError:
+            print("This might have failed because this data is 1D, try the XPS loader")
+            raise
         initial_axis_values = eval(fits_object[1].header['TRVAL' + tfields])
         axis_deltas = eval(fits_object[1].header['TDELT' + tfields])
         axis_names_list = axis_names.replace("(","").replace(")","").split(",")
@@ -25,8 +53,8 @@ def load_maestro_fits_single(filename):
 
         for axis_name, axis_length, initial_axis_value, axis_delta in zipped:
             axis_name_converted = conv[axis_name]
-            if axis_name_converted == "slit":
-                axis_full = np.linspace(-15, axis_length*0.045 - 15, num=axis_length)
+            if axis_name_converted == "slit": # This assumes the center of slit is at thetax=0
+                axis_full = np.linspace(-axis_length*0.045/2, axis_length*0.045/2, num=axis_length)
             else:
                 axis_full = np.linspace(initial_axis_value, axis_length*axis_delta + initial_axis_value, num=axis_length)
             dims.append(axis_name_converted)
@@ -56,8 +84,8 @@ def load_maestro_fits_map(filename, is_deflector=True):
         zipped = zip(axis_names_list, axis_lengths, initial_axis_values, axis_deltas)
         for axis_name, axis_length, initial_axis_value, axis_delta in zipped:
             axis_name_converted = conv[axis_name]
-            if axis_name_converted == "slit":
-                axis_full = np.linspace(-15, axis_length * 0.045 - 15, num=axis_length)
+            if axis_name_converted == "slit": # This assumes the center of slit is at thetax=0
+                axis_full = np.linspace(-axis_length*0.045/2, axis_length*0.045/2, num=axis_length)
             else:
                 axis_full = np.linspace(initial_axis_value, axis_length * axis_delta + initial_axis_value, num=axis_length)
             dims.append(axis_name_converted)
@@ -102,8 +130,8 @@ def load_maestro_fits_hvscan(filename):
         zipped = zip(axis_names_list, axis_lengths, initial_axis_values, axis_deltas)
         for axis_name, axis_length, initial_axis_value, axis_delta in zipped:
             axis_name_converted = conv[axis_name]
-            if axis_name_converted == "slit":
-                axis_full = np.linspace(-15, axis_length * 0.045 - 15, num=axis_length)
+            if axis_name_converted == "slit": # This assumes the center of slit is at thetax=0
+                axis_full = np.linspace(-axis_length*0.045/2, axis_length*0.045/2, num=axis_length)
             else:
                 axis_full = np.linspace(initial_axis_value, axis_length * axis_delta + initial_axis_value, num=axis_length)
             dims.append(axis_name_converted)
