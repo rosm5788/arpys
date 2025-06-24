@@ -218,10 +218,11 @@ def symmetrize_quadrant_3d(
 
     return result
 
-def map_k_reg_trilinear_fast_multithreaded(arpes_obj, phi0=0, theta0=0, azimuth=0, slit_orientation=0,
+def map_k_reg_fast(arpes_obj, phi0=0, theta0=0, azimuth=0, slit_orientation=0,
                                            num_threads=None, background_threshold=None):
     """Parallelized map_k_reg conversion tool. Uses same paramenters, but breaks map into "chunks"
-    which can be interpolated in parallel. By default, uses total available cores - 1."""
+    which is interpolated in parallel via a faster (than scipy) trillinear interpolation. Trillinear 
+    also appears to be more friendly to multithreading. By default, uses total available cores - 1."""
     from concurrent.futures import ThreadPoolExecutor
     import time
 
