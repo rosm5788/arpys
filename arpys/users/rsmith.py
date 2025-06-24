@@ -123,3 +123,216 @@ def align_hvscan(hvscan,inclusion_zone=0.02):
     hv_cuts_aligned = xr.concat(hv_cuts_interped, 'photon_energy')
     hv_cuts_aligned = hv_cuts_aligned.assign_coords({'photon_energy': hvscan['photon_energy']})
     return hv_cuts_aligned
+
+def symmetrize_spectra(
+    spectra: xr.DataArray,
+    axis: str = 'slit',
+    direction: str = 'positive'
+) -> xr.DataArray:
+    """
+    Symmetrizes ARPES data along a specified axis by copying one side to the other.
+
+    Parameters
+    ----------
+    spectra : xr.DataArray
+        Input DataArray (2D or 3D) with 'slit' or 'perp' coordinate.
+    axis : str
+        Axis to symmetrize across. Must be 'slit' or 'perp'.
+    direction : str
+        Which side to preserve and copy from: 'positive' (default) or 'negative'.
+
+    Returns
+    -------
+    xr.DataArray
+        Symmetrized DataArray.
+    """
+    if axis not in spectra.coords:
+        raise ValueError(f"Axis '{axis}' not found in coordinates.")
+    if direction not in ['positive', 'negative']:
+        raise ValueError("direction must be 'positive' or 'negative'")
+
+    coords = spectra.coords[axis].values
+    result = spectra.copy(deep=True)
+
+    for i, val in enumerate(coords):
+        if (direction == 'positive' and val > 0) or (direction == 'negative' and val < 0):
+            mirror_val = -val
+            j = (np.abs(coords - mirror_val)).argmin()
+            # use isel-based safe assignment
+            src = spectra.isel({axis: i})
+            result[{axis: j}] = src
+
+    return result
+
+def symmetrize_quadrant_3d(
+    spectra: xr.DataArray,
+    keep_quadrant: tuple[str, str] = ('positive', 'positive')
+) -> xr.DataArray:
+    """
+    Symmetrizes a 3D ARPES map by keeping one quadrant of (slit, perp) and mirroring
+    into the other three quadrants.
+
+    Parameters
+    ----------
+    spectra : xr.DataArray
+        Must be 3D and have both 'slit' and 'perp' coordinates.
+    keep_quadrant : tuple of str
+        Which quadrant to keep, e.g. ('positive', 'positive') means
+        keep (slit > 0, perp > 0). Other options are combinations of
+        'positive' and 'negative'.
+
+    Returns
+    -------
+    xr.DataArray
+        Fully symmetrized 3D spectra.
+    """
+    if spectra.ndim != 3:
+        raise ValueError("Quadrant symmetrization only applies to 3D data.")
+    if 'slit' not in spectra.coords or 'perp' not in spectra.coords:
+        raise ValueError("3D spectra must include 'slit' and 'perp' coordinates.")
+
+    slit_dir, perp_dir = keep_quadrant
+    if slit_dir not in ['positive', 'negative'] or perp_dir not in ['positive', 'negative']:
+        raise ValueError("Each entry in keep_quadrant must be 'positive' or 'negative'")
+
+    slit_vals = spectra.coords['slit'].values
+    perp_vals = spectra.coords['perp'].values
+
+    # Find indices of the "kept" quadrant
+    slit_keep = slit_vals > 0 if slit_dir == 'positive' else slit_vals < 0
+    perp_keep = perp_vals > 0 if perp_dir == 'positive' else perp_vals < 0
+
+    result = spectra.copy(deep=True)
+
+    for i, s_val in enumerate(slit_vals):
+        for j, p_val in enumerate(perp_vals):
+            if slit_keep[i] and perp_keep[j]:
+                src = spectra.isel({'slit': i, 'perp': j})
+
+                # Reflect into 3 other quadrants
+                mirrors = [(-s_val, p_val), (s_val, -p_val), (-s_val, -p_val)]
+                for s_mir, p_mir in mirrors:
+                    i_mir = (np.abs(slit_vals - s_mir)).argmin()
+                    j_mir = (np.abs(perp_vals - p_mir)).argmin()
+                    result.loc[dict(slit=slit_vals[i_mir], perp=perp_vals[j_mir])] = src
+
+    return result
+
+def map_k_reg_trilinear_fast_multithreaded(arpes_obj, phi0=0, theta0=0, azimuth=0, slit_orientation=0,
+                                           num_threads=None, background_threshold=None):
+    """Parallelized map_k_reg conversion tool. Uses same paramenters, but breaks map into "chunks"
+    which can be interpolated in parallel. By default, uses total available cores - 1."""
+    from concurrent.futures import ThreadPoolExecutor
+    import time
+
+    def parallel_reverse_k_conversion(energy_grid, kx_grid, ky_grid, reverse_func, num_threads=8, **kwargs):
+        slices = np.array_split(np.arange(energy_grid.shape[0]), num_threads)
+
+        def process_chunk(indices):
+            e = energy_grid[indices, :, :]
+            kx = kx_grid[indices, :, :]
+            ky = ky_grid[indices, :, :]
+            return reverse_func(e, kx, ky, **kwargs)
+
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            results = list(executor.map(process_chunk, slices))
+
+        alpha = np.concatenate([r[0] for r in results], axis=0)
+        beta  = np.concatenate([r[1] for r in results], axis=0)
+        energy = np.concatenate([r[2] for r in results], axis=0)
+        return alpha, beta, energy
+
+    def trilinear_interp(data, grid_coords, points):
+        E, S, P = grid_coords
+        e_idx = np.searchsorted(E, points[:, 0]) - 1
+        s_idx = np.searchsorted(S, points[:, 1]) - 1
+        p_idx = np.searchsorted(P, points[:, 2]) - 1
+
+        e_idx = np.clip(e_idx, 0, len(E) - 2)
+        s_idx = np.clip(s_idx, 0, len(S) - 2)
+        p_idx = np.clip(p_idx, 0, len(P) - 2)
+
+        de = (points[:, 0] - E[e_idx]) / (E[e_idx + 1] - E[e_idx])
+        ds = (points[:, 1] - S[s_idx]) / (S[s_idx + 1] - S[s_idx])
+        dp = (points[:, 2] - P[p_idx]) / (P[p_idx + 1] - P[p_idx])
+
+        result = np.zeros_like(de)
+        for dx in [0, 1]:
+            for dy in [0, 1]:
+                for dz in [0, 1]:
+                    w = ((1 - de) if dx == 0 else de) * \
+                        ((1 - ds) if dy == 0 else ds) * \
+                        ((1 - dp) if dz == 0 else dp)
+                    result += w * data[
+                        e_idx + dx,
+                        s_idx + dy,
+                        p_idx + dz
+                    ]
+        return result
+
+    def parallel_trilinear_interp(data, grid_coords, points, num_threads):
+        chunks = np.array_split(points, num_threads)
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            results = list(executor.map(lambda chunk: trilinear_interp(data, grid_coords, chunk), chunks))
+        return np.concatenate(results)
+
+    if num_threads is None:
+        import os
+        num_threads = os.cpu_count() -1 
+
+    assert hasattr(arpes_obj, 'arpes')
+    assert arpes_obj.arpes.ef is not None
+
+    ef = arpes_obj.arpes.ef
+    copy = arpes_obj.copy().transpose('energy', 'slit', 'perp')
+
+    # Grid bounds
+    kxmin, _ = copy.arpes.forward_k_conversion(np.nanmax(copy.energy.values), np.nanmin(copy.slit.values), 0,
+                                               phi0, theta0, azimuth, slit_orientation)
+    kxmax, _ = copy.arpes.forward_k_conversion(np.nanmax(copy.energy.values), np.nanmax(copy.slit.values), 0,
+                                               phi0, theta0, azimuth, slit_orientation)
+    _, kymin = copy.arpes.forward_k_conversion(np.nanmax(copy.energy.values), 0, np.nanmin(copy.perp.values),
+                                               phi0, theta0, azimuth, slit_orientation)
+    _, kymax = copy.arpes.forward_k_conversion(np.nanmax(copy.energy.values), 0, np.nanmax(copy.perp.values),
+                                               phi0, theta0, azimuth, slit_orientation)
+
+    kx_new = np.sort(np.linspace(kxmin, kxmax, num=copy.slit.size))
+    ky_new = np.sort(np.linspace(kymin, kymax, num=copy.perp.size))
+    energy_new = np.linspace(np.nanmin(copy.energy.values), np.nanmax(copy.energy.values), num=copy.energy.size)
+
+    # Create output meshgrid
+    energy_grid, kx_grid, ky_grid = np.meshgrid(energy_new, kx_new, ky_new, indexing='ij')
+
+    # Reverse convert to experimental space
+    t0 = time.time()
+    alpha, beta, energy = parallel_reverse_k_conversion(
+        energy_grid, kx_grid, ky_grid,
+        reverse_func=copy.arpes.reverse_k_conversion,
+        num_threads=num_threads,
+        phi0=phi0, theta0=theta0, azimuth=azimuth, slit_orientation=slit_orientation
+    )
+    t1 = time.time()
+    print(f"Point generation time: {t1 - t0:.3f}s")
+
+    points = np.stack((energy.ravel(), alpha.ravel(), beta.ravel()), axis=-1)
+    grid_coords = (copy.energy.values, copy.slit.values, copy.perp.values)
+
+    # Interpolation (multithreaded)
+    t2 = time.time()
+    interpolated = parallel_trilinear_interp(copy.values, grid_coords, points, num_threads)
+    t3 = time.time()
+    print(f"Interpolation time: {t3 - t2:.3f}s")
+
+    result = interpolated.reshape((len(energy_new), len(kx_new), len(ky_new)))
+
+    # Optional background thresholding
+    if background_threshold is None:
+        flat = result.ravel()
+        flat_nonzero = flat[flat > 0]
+        background_threshold = np.quantile(flat_nonzero, 0.01) if flat_nonzero.size > 0 else 0
+    print(f"Applying background threshold at {background_threshold:.3g}")
+    result[result < background_threshold] = 0
+
+    return xr.DataArray(result, dims=['binding', 'kx', 'ky'],
+                        coords={'binding': energy_new - ef, 'kx': kx_new, 'ky': ky_new},
+                        attrs=copy.attrs)
