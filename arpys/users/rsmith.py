@@ -216,6 +216,9 @@ def symmetrize_quadrant_3d(
                     j_mir = (np.abs(perp_vals - p_mir)).argmin()
                     result.loc[dict(slit=slit_vals[i_mir], perp=perp_vals[j_mir])] = src
 
+    # Need this to eliminate perp=0 artifacts, occasionally seeing a "bar" (with structure) along
+    # perp=0 for slit values *not* specified to keep in keep_quadrant. might be a better fix out there...
+    result = symmetrize_spectra(result,direction=keep_quadrant[1])
     return result
 
 def map_k_reg_fast(arpes_obj, phi0=0, theta0=0, azimuth=0, slit_orientation=0,
