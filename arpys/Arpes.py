@@ -517,6 +517,71 @@ class Arpes:
                                            attrs=copy.attrs)
         flattened = higher_dimension_xr.sum('ky')
         return flattened
+    
+    def arbitrary_map_cut(self,angle,phi0=0,theta0=0,targeting_mode=False,interp_method='linear'):
+        # angle is in deg wrt to slit/kx, phi0 is horizontal offset in slit/kx, theta0 is vertical offset in perp/ky
+        def cut_line(t,phi,x0,y0):
+            return (x0+t*np.cos(phi),y0+t*np.sin(phi))
+        angle = np.deg2rad(angle)
+        if 'perp' in self._obj.coords:
+            data = self._obj.copy().transpose('energy','slit','perp')
+            data.arpes.ef = self.ef
+            xmin,xmax = (data.slit.values[0],data.slit.values[-1])
+            ymin,ymax = (data.perp.values[0],data.perp.values[-1])
+            interp_object = RegularGridInterpolator((data.energy.values,data.slit.values,data.perp.values),data.values,bounds_error=False,fill_value=0)
+            is_kconv = False
+        elif 'ky' in self._obj.coords:
+            data = self._obj.copy().transpose('binding','kx','ky')
+            data.arpes.ef = self.ef
+            xmin,xmax = (data.kx.values[0],data.kx.values[-1])
+            ymin,ymax = (data.ky.values[0],data.ky.values[-1])
+            interp_object = RegularGridInterpolator((data.binding.values,data.kx.values,data.ky.values),data.values,bounds_error=False,fill_value=0)
+            is_kconv = True
+        else: # This is my way of checking if the data is 3D since 2D spectra won't have perp or ky
+            raise ValueError("I don't think this is an arpes map")
+        if phi0 > xmax or phi0 < xmin or theta0 > ymax or theta0 < ymin:
+            raise ValueError("You can't have the center of the map cut be outside of the map, silly")
+        if angle >= 0 and angle <= np.deg2rad(90):
+            tmin = max((xmin-phi0)/np.cos(angle),(ymin-theta0)/np.sin(angle))
+            tmax = min((xmax-phi0)/np.cos(angle),(ymax-theta0)/np.sin(angle))
+        elif angle < 0 and angle >= np.deg2rad(-90):
+            tmin = max((xmin-phi0)/np.cos(angle),-(ymin-theta0)/np.sin(angle))
+            tmax = min((xmax-phi0)/np.cos(angle),-(ymax-theta0)/np.sin(angle))
+        else:
+            raise ValueError("Angle with respect to slit/kx should be between -90 and 90 deg")
+        if targeting_mode: # Targeting mode just plots the center and path of the cut you're taking
+            fig, ax = plt.subplots() 
+            if not is_kconv:
+                if data.arpes.ef is None:
+                    raise AttributeError("Need map.arpes.ef set for targeting mode if not k converted")
+                data.sel(energy=slice(data.arpes.ef-0.1,data.arpes.ef+0.05)).sum('energy').plot(x='slit',y='perp',cmap='inferno',add_colorbar=False,robust=True,ax=ax)
+            else:
+                data.sel(binding=slice(-0.1,0.05)).sum('binding').plot(x='kx',y='ky',cmap='inferno',add_colorbar=False,robust=True,ax=ax)
+            ax.scatter([phi0],[theta0],50,'red')
+            points = cut_line(np.linspace(tmin,tmax,51,endpoint=True),angle,phi0,theta0)
+            ax.plot(points[0],points[1])
+            ax.set_aspect(1)
+            return points
+        num_points = len(data[0])+1-(len(data[0])%2)
+        num_energies = len(data) # I've transposed the data such that either binding or energy is the first axis
+        t_vals = np.linspace(tmin,tmax,num_points,endpoint=True)
+        points_x,points_y = cut_line(t_vals,angle,phi0,theta0)
+        interp_points = np.zeros((num_energies*num_points,3))
+        for j in range(num_energies):
+            for i in range(num_points):
+                interp_points[i+j*num_points] = [data.coords[data.dims[0]].values[j],points_x[i],points_y[i]]
+        print("Calling interpolation on " + str(len(interp_points)) + " points")
+        # Do the interpolation
+        t2 = time.time()
+        interpolation_output = interp_object(interp_points,interp_method)
+        t3 = time.time()
+        print("Interpolation time elapsed = " + str(np.around(t3-t2, decimals=3)) + "s")
+        cut_data = interpolation_output.reshape((num_energies,num_points))
+        if not is_kconv:
+            cut_xarray = xr.DataArray(cut_data, dims=['energy', 'slit'], coords={'energy': data.energy, 'slit': t_vals}, attrs=data.attrs)
+        else:
+            cut_xarray = xr.DataArray(cut_data, dims=['binding', 'kx'], coords={'binding': data.binding, 'kx': t_vals}, attrs=data.attrs)
+        return cut_xarray
 
 
     # Kz maps should always be in binding energy, will need to shift off using a fixed work-function to recover
