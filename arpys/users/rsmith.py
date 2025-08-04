@@ -218,7 +218,8 @@ def symmetrize_quadrant_3d(
 
     # Need this to eliminate perp=0 artifacts, occasionally seeing a "bar" (with structure) along
     # perp=0 for slit values *not* specified to keep in keep_quadrant. might be a better fix out there...
-    result = symmetrize_spectra(result,direction=keep_quadrant[1])
+    result = symmetrize_spectra(result,axis='slit',direction=keep_quadrant[0])
+    result = symmetrize_spectra(result,axis='perp',direction=keep_quadrant[1])
     return result
 
 def map_k_reg_fast(arpes_obj, phi0=0, theta0=0, azimuth=0, slit_orientation=0,
@@ -285,7 +286,7 @@ def map_k_reg_fast(arpes_obj, phi0=0, theta0=0, azimuth=0, slit_orientation=0,
         num_threads = os.cpu_count() -1 
 
     assert hasattr(arpes_obj, 'arpes')
-    assert arpes_obj.arpes.ef is not None
+    assert arpes_obj.arpes.ef is not None, "Define Ef or risk being sent to the underworld."
 
     ef = arpes_obj.arpes.ef
     copy = arpes_obj.copy().transpose('energy', 'slit', 'perp')
