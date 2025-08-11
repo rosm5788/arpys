@@ -541,12 +541,16 @@ class Arpes:
             raise ValueError("I don't think this is an arpes map")
         if phi0 > xmax or phi0 < xmin or theta0 > ymax or theta0 < ymin:
             raise ValueError("You can't have the center of the map cut be outside of the map, silly")
-        if angle >= 0 and angle <= np.deg2rad(90):
+        if angle > 0 and angle < np.deg2rad(90):
             tmin = max((xmin-phi0)/np.cos(angle),(ymin-theta0)/np.sin(angle))
             tmax = min((xmax-phi0)/np.cos(angle),(ymax-theta0)/np.sin(angle))
-        elif angle < 0 and angle >= np.deg2rad(-90):
+        elif angle < 0 and angle > np.deg2rad(-90):
             tmin = max((xmin-phi0)/np.cos(angle),-(ymin-theta0)/np.sin(angle))
             tmax = min((xmax-phi0)/np.cos(angle),-(ymax-theta0)/np.sin(angle))
+        elif angle == 0: # This is here to avoid the divide by zero error for the /np.sin
+            tmin,tmax = xmin-phi0,xmax-phi0
+        elif angle == 90 or angle == -90: # This avoids issues with the /np.cos
+            tmin,tmax = np.sign(angle)*(ymin-theta0),np.sign(angle)*(ymax-theta0)
         else:
             raise ValueError("Angle with respect to slit/kx should be between -90 and 90 deg")
         if targeting_mode: # Targeting mode just plots the center and path of the cut you're taking
@@ -561,6 +565,7 @@ class Arpes:
             points = cut_line(np.linspace(tmin,tmax,51,endpoint=True),angle,phi0,theta0)
             ax.plot(points[0],points[1])
             ax.set_aspect(1)
+            ax.set_title("Path of Selected Map Cut")
             return points
         num_points = len(data[0])+1-(len(data[0])%2)
         num_energies = len(data) # I've transposed the data such that either binding or energy is the first axis
