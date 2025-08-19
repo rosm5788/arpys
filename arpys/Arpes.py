@@ -522,6 +522,7 @@ class Arpes:
         # angle is in deg wrt to slit/kx, phi0 is horizontal offset in slit/kx, theta0 is vertical offset in perp/ky
         def cut_line(t,phi,x0,y0):
             return (x0+t*np.cos(phi),y0+t*np.sin(phi))
+        angle_deg = angle
         angle = np.deg2rad(angle)
         if 'perp' in self._obj.coords:
             data = self._obj.copy().transpose('energy','slit','perp')
@@ -541,15 +542,15 @@ class Arpes:
             raise ValueError("I don't think this is an arpes map")
         if phi0 > xmax or phi0 < xmin or theta0 > ymax or theta0 < ymin:
             raise ValueError("You can't have the center of the map cut be outside of the map, silly")
-        if angle > 0 and angle < np.deg2rad(90):
+        if angle_deg > 0 and angle_deg < 90:
             tmin = max((xmin-phi0)/np.cos(angle),(ymin-theta0)/np.sin(angle))
             tmax = min((xmax-phi0)/np.cos(angle),(ymax-theta0)/np.sin(angle))
-        elif angle < 0 and angle > np.deg2rad(-90):
+        elif angle_deg < 0 and angle_deg > -90:
             tmin = max((xmin-phi0)/np.cos(angle),-(ymin-theta0)/np.sin(angle))
             tmax = min((xmax-phi0)/np.cos(angle),-(ymax-theta0)/np.sin(angle))
-        elif angle == 0: # This is here to avoid the divide by zero error for the /np.sin
+        elif angle_deg == 0: # This is here to avoid the divide by zero error for the /np.sin
             tmin,tmax = xmin-phi0,xmax-phi0
-        elif angle == 90 or angle == -90: # This avoids issues with the /np.cos
+        elif angle_deg == 90 or angle_deg == -90: # This avoids issues with the /np.cos
             tmin,tmax = np.sign(angle)*(ymin-theta0),np.sign(angle)*(ymax-theta0)
         else:
             raise ValueError("Angle with respect to slit/kx should be between -90 and 90 deg")
