@@ -40,6 +40,64 @@ def normalize_3D(map):
         perp_normed = perp_normed.assign_coords({'perp':map['perp']})
     return perp_normed
 
+def dewarp_spectrum(spectrum,cutoff_distance=0.1,return_fit=False):
+    """
+    Attempts to dewarp a spectrum collected with a straight slit
+    by finding eF at each slit value, then fitting to a parabola
+    and ignoring values larger than cutoff_distance (eV) away from initial guess.
+
+    NOTES: 
+        - coords are interpolated to match with each other after shifting
+        - dewarped spectra is shifted back to kinetic based on the center of fitted parabola
+
+    Args:
+        spectrum (arpes object): a 2D data spectrum with coords {slit, energy}
+        cutoff_distance (float): the distance in eV from the spectrum's eF_guess
+            beyond which you'd like to ignore points
+        return_fit (boolean)   : whether or not to return the fitted parabola, extracted
+            eF values, and the slit_values used for the fit (to see which were ignored)
+
+    Returns:
+        dewarped spectra (arpes_object): a spectra with shifted
+        ----- if return_fit == True -------
+            parabola_func (function): function that returns the fitted parabola for a given angle
+            slit_values_fit (list of floats): list of slit values used for the fitting
+            new_efs (list of floats): list of extracted fermi energies for each slit EDC
+    """
+    temp_edcs = []
+    new_efs = []
+    slit_values_fit = []
+    slit_values = spectrum.slit.values
+    spectrum_ef = spectrum.arpes.guess_ef()
+    for angle in slit_values:
+        edc = spectrum.sel(slit=angle,method='nearest')
+        ef_guess = edc.arpes.guess_ef()
+        if np.abs(spectrum_ef - ef_guess) > cutoff_distance:
+            continue
+
+        new_efs.append(edc.arpes.guess_ef())
+        slit_values_fit.append(angle)
+        
+    coeffs = np.polyfit(slit_values_fit, new_efs, 2)
+
+    # Create a parabolic function from the coefficients
+    parabola_func = np.poly1d(coeffs)
+    print(f"made parabola func with {coeffs}")
+    for i,angle in enumerate(slit_values):
+        fitted_ef = parabola_func(angle)
+        edc = spectrum.sel(slit=angle,method='nearest')
+        new_energies = edc.energy.values - fitted_ef + parabola_func(0)
+        new_edc = edc.assign_coords(energy=new_energies)
+        #print(f"finished angle {angle} with ef shift: {fitted_ef}")
+        if i == 0:
+            temp_edcs.append(new_edc)
+        else:
+            temp_edcs.append(new_edc.interp_like(temp_edcs[0]))
+    if return_fit:
+        return xr.concat(temp_edcs,'slit'), parabola_func, slit_values_fit,new_efs
+    else:
+        return xr.concat(temp_edcs,'slit')
+
 # pass a k-space spectra converted using a regular meshgrid. then, tweak peak_scale and nrg_spacing
 # so that the stacked lines dont peak too high and have an appropriate number of lines
 def stack_lines(spectra,nrg_spacing = 0.02,peak_scale=0.2,fig=None,ax=None,**kwargs):
