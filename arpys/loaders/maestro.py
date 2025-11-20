@@ -2,7 +2,21 @@ import numpy as np
 import xarray as xr
 from astropy.io import fits
 import arpys
+import h5py
+import os
 
+def load_maestro_h5_XPS(filename):
+    with h5py.File(filename) as file:
+        spectra_name = list(file['1D_Data'].keys())[0]
+        spectrum_data = file['1D_Data'][spectra_name]
+        scale_offsets = file['1D_Data'][spectra_name].attrs['scaleOffset'] # This is a tuple of the initial axis value for (pixel,energy)
+        scale_deltas = file['1D_Data'][spectra_name].attrs['scaleDelta'] # This is a tuple of the change in each pixel for (pixel,energy)
+
+        spectrum_array = spectrum_data[:,0]
+        attrs = load_maestro_h5_attrs(file)
+        energy_vals = np.linspace(scale_offsets[0],scale_offsets[0]+scale_deltas[0]*(spectrum_array.shape[0]-1),spectrum_array.shape[0],True)
+        spectrum_xarray = xr.DataArray(spectrum_array,{'energy':energy_vals},attrs=attrs)
+    return spectrum_xarray
 
 #For loading 1D XPS data
 def load_maestro_fits_XPS(filename):
@@ -22,11 +36,38 @@ def load_maestro_fits_XPS(filename):
         dims = [axis_name_converted]
         
         coords = {}
-        axis_full = np.linspace(initial_axis_value, axis_length*axis_delta + initial_axis_value, num=axis_length)
+        axis_full = np.linspace(initial_axis_value, (axis_length - 1)*axis_delta + initial_axis_value, num=axis_length)
         coords[axis_name_converted] = axis_full
 
         attrs = read_maestro_fits_attrs(fits_object)
         return xr.DataArray(data[:,0], dims=dims, coords=coords, attrs=attrs)
+
+def load_maestro_h5_single(filename):
+    with h5py.File(filename) as file:
+        spectra_name = list(file['2D_Data'].keys())[0]
+        spectrum_data = file['2D_Data'][spectra_name]
+        scale_offsets = file['2D_Data'][spectra_name].attrs['scaleOffset'] # This is a tuple of the initial axis value for (pixel,energy)
+        scale_deltas = file['2D_Data'][spectra_name].attrs['scaleDelta'] # This is a tuple of the change in each pixel for (pixel,energy)
+        try:
+            is_swept = {"S": True, "F": False}[spectra_name[0]]
+        except:
+            raise KeyError("Congratulations, you've discovered a new edge case! Please tell Alex about this")
+
+        spectrum_array = spectrum_data[:,:,0]
+        attrs = load_maestro_h5_attrs(file)
+
+        if is_swept:
+            energy_vals = np.linspace(scale_offsets[1],scale_offsets[1]+scale_deltas[1]*(spectrum_array.shape[0]-1),spectrum_array.shape[0],True)
+            # This assumes each pixel is 0.045 deg in thetax and that the detector is centered at thetax=0
+            slit_vals = np.linspace(-(spectrum_array.shape[1]-1)*0.045/2,(spectrum_array.shape[1]-1)*0.045/2,spectrum_array.shape[1],endpoint=True)
+            spectrum_xarray = xr.DataArray(spectrum_array,{'energy':energy_vals,'slit':slit_vals},attrs=attrs)
+        else:
+            energy_vals = np.linspace(scale_offsets[0],scale_offsets[0]+scale_deltas[0]*(spectrum_array.shape[1]-1),spectrum_array.shape[1],True)
+            # This assumes each pixel is 0.045 deg in thetax and that the detector is centered at thetax=0
+            slit_vals = np.linspace(-(spectrum_array.shape[0]-1)*0.045/2,(spectrum_array.shape[0]-1)*0.045/2,spectrum_array.shape[0],endpoint=True)
+            spectrum_xarray = xr.DataArray(spectrum_array,{'slit':slit_vals,'energy':energy_vals},attrs=attrs)
+        spectrum_xarray = spectrum_xarray.transpose('slit','energy')
+    return spectrum_xarray
 
 # For loading a single cut, NOT FOR LOADING FERMI MAPS OR PHOTON ENERGY SCANS
 def load_maestro_fits_single(filename):
@@ -53,15 +94,49 @@ def load_maestro_fits_single(filename):
 
         for axis_name, axis_length, initial_axis_value, axis_delta in zipped:
             axis_name_converted = conv[axis_name]
-            if axis_name_converted == "slit": # This assumes the center of slit is at thetax=0
-                axis_full = np.linspace(-axis_length*0.045/2, axis_length*0.045/2, num=axis_length)
+            if axis_name_converted == "slit": # This assumes the center of slit is at thetax=0 and each pixel is 0.045 deg apart
+                axis_full = np.linspace(-(axis_length-1)*0.045/2, (axis_length-1)*0.045/2, num=axis_length)
             else:
-                axis_full = np.linspace(initial_axis_value, axis_length*axis_delta + initial_axis_value, num=axis_length)
+                axis_full = np.linspace(initial_axis_value, (axis_length - 1) * axis_delta + initial_axis_value, num=axis_length)
             dims.append(axis_name_converted)
             coords[axis_name_converted] = axis_full
 
         attrs = read_maestro_fits_attrs(fits_object)
         return xr.DataArray(data[:, :, 0], dims=dims, coords=coords, attrs=attrs)
+
+def load_maestro_h5_map(filename): 
+    with h5py.File(filename) as file:
+        spectra_name = list(file['2D_Data'].keys())[0]
+        map_data = file['2D_Data'][spectra_name]
+        scale_offsets = file['2D_Data'][spectra_name].attrs['scaleOffset'] # This is a tuple of the initial axis value for (pixel,energy)
+        scale_deltas = file['2D_Data'][spectra_name].attrs['scaleDelta'] # This is a tuple of the change in each pixel for (pixel,energy)
+        try:
+            is_swept = {"S": True, "F": False}[spectra_name[0]]
+        except:
+            raise KeyError("Congratulations, you've discovered a new edge case! Please tell Alex about this")
+
+        map_array = np.zeros(map_data.shape, dtype=map_data.dtype)
+        for i in range(map_data.shape[2]): # Apparently hdf5 reads chunked data really slowly so it goes WAY faster if you do it like this
+            map_array[:,:,i] = map_data[:,:,i]
+
+        try: # This checks whether or not it's a deflector or a beta compensated map
+            perp_vals = file['0D_Data']['Slit Defl']
+        except:
+            perp_vals = file['0D_Data']['Beta']
+        attrs = load_maestro_h5_attrs(file)
+
+        if is_swept:
+            energy_vals = np.linspace(scale_offsets[1],scale_offsets[1]+scale_deltas[1]*(map_array.shape[0]-1),map_array.shape[0],True)
+            # This assumes each pixel is 0.045 deg in thetax and that the detector is centered at thetax=0
+            slit_vals = np.linspace(-(map_array.shape[1]-1)*0.045/2,(map_array.shape[1]-1)*0.045/2,map_array.shape[1],endpoint=True)
+            map_xarray = xr.DataArray(map_array,{'energy':energy_vals,'slit':slit_vals,'perp':perp_vals},attrs=attrs)
+        else:
+            energy_vals = np.linspace(scale_offsets[0],scale_offsets[0]+scale_deltas[0]*(map_array.shape[1]-1),map_array.shape[1],True)
+            # This assumes each pixel is 0.045 deg in thetax and that the detector is centered at thetax=0
+            slit_vals = np.linspace(-(map_array.shape[0]-1)*0.045/2,(map_array.shape[0]-1)*0.045/2,map_array.shape[0],endpoint=True)
+            map_xarray = xr.DataArray(map_array,{'slit':slit_vals,'energy':energy_vals,'perp':perp_vals},attrs=attrs)
+        map_xarray = map_xarray.transpose('perp','slit','energy')
+    return map_xarray
 
 # For reading fermi maps ONLY, NOT FOR LOADING INDIVIDUAL SPECTRA OR PHOTON ENERGY SCANS
 def load_maestro_fits_map(filename, is_deflector=True):
@@ -84,10 +159,10 @@ def load_maestro_fits_map(filename, is_deflector=True):
         zipped = zip(axis_names_list, axis_lengths, initial_axis_values, axis_deltas)
         for axis_name, axis_length, initial_axis_value, axis_delta in zipped:
             axis_name_converted = conv[axis_name]
-            if axis_name_converted == "slit": # This assumes the center of slit is at thetax=0
-                axis_full = np.linspace(-axis_length*0.045/2, axis_length*0.045/2, num=axis_length)
+            if axis_name_converted == "slit": # This assumes the center of slit is at thetax=0 and each pixel is 0.045 deg apart
+                axis_full = np.linspace(-(axis_length-1)*0.045/2, (axis_length-1)*0.045/2, num=axis_length)
             else:
-                axis_full = np.linspace(initial_axis_value, axis_length * axis_delta + initial_axis_value, num=axis_length)
+                axis_full = np.linspace(initial_axis_value, (axis_length - 1) * axis_delta + initial_axis_value, num=axis_length)
             dims.append(axis_name_converted)
             coords[axis_name_converted] = axis_full
 
@@ -97,7 +172,7 @@ def load_maestro_fits_map(filename, is_deflector=True):
             for single_record in data:
                 fermi_map.append(single_record.field(data_type).T)
                 perp_vals.append(single_record.field('Slit Defl'))
-        else: # Need to make sure this is working. I need a beta map or something to show if it works
+        else:
             for single_record in data:
                 fermi_map.append(single_record.field(data_type).T)
                 perp_vals.append(single_record.field('beta'))
@@ -108,8 +183,40 @@ def load_maestro_fits_map(filename, is_deflector=True):
         attrs = read_maestro_fits_attrs(fits_object)
         return xr.DataArray(fermi_map, dims=dims, coords=coords, attrs=attrs)
 
+def load_maestro_h5_hvscan(filename): # Use this photon energy scan loader for any data 2025 on
+    with h5py.File(filename) as file:
+        spectra_name = list(file['2D_Data'].keys())[0]
+        hvscan_data = file['2D_Data'][spectra_name]
+        scale_offsets = file['2D_Data'][spectra_name].attrs['scaleOffset'] # This is a tuple of the initial axis value for (pixel,energy)
+        scale_deltas = file['2D_Data'][spectra_name].attrs['scaleDelta'] # This is a tuple of the change in each pixel for (pixel,energy)
+        try:
+            is_swept = {"S": True, "F": False}[spectra_name[0]]
+        except:
+            raise KeyError("Congratulations, you've discovered a new edge case! Please tell Alex about this")
+        
+
+        hvscan_array = np.zeros(hvscan_data.shape, dtype=hvscan_data.dtype)
+        for i in range(hvscan_data.shape[2]): # Apparently hdf5 reads chunked data really slowly so it goes WAY faster if you do it like this
+            hvscan_array[:,:,i] = hvscan_data[:,:,i]
+
+        photon_energies = file['0D_Data']['mono_eV'][:]
+        attrs = load_maestro_h5_attrs(file)
+
+        if is_swept:
+            energy_vals = np.linspace(scale_offsets[1],scale_offsets[1]+scale_deltas[1]*(hvscan_array.shape[0]-1),hvscan_array.shape[0],True)
+            # This assumes each pixel is 0.045 deg in thetax and that the detector is centered at thetax=0
+            slit_vals = np.linspace(-(hvscan_array.shape[1]-1)*0.045/2,(hvscan_array.shape[1]-1)*0.045/2,hvscan_array.shape[1],endpoint=True)
+            hvscan_xarray = xr.DataArray(hvscan_array,{'energy':energy_vals,'slit':slit_vals,'photon_energy':photon_energies},attrs=attrs)
+        else:
+            energy_vals = np.linspace(scale_offsets[0],scale_offsets[0]+scale_deltas[0]*(hvscan_array.shape[1]-1),hvscan_array.shape[1],True)
+            # This assumes each pixel is 0.045 deg in thetax and that the detector is centered at thetax=0
+            slit_vals = np.linspace(-(hvscan_array.shape[0]-1)*0.045/2,(hvscan_array.shape[0]-1)*0.045/2,hvscan_array.shape[0],endpoint=True)
+            hvscan_xarray = xr.DataArray(hvscan_array,{'slit':slit_vals,'energy':energy_vals,'photon_energy':photon_energies},attrs=attrs)
+        hvscan_xarray = hvscan_xarray.transpose('photon_energy','slit','energy')
+    return hvscan_xarray
 
 # For reading hvscans ONLY, NOT FOR LOADING INDIVIDUAL SPECTRA OR FERMI MAPS
+# Doesn't work on data from at least 05/2025 on
 def load_maestro_fits_hvscan(filename):
     with fits.open(filename) as fits_object:
         data_type = fits_object[1].data.dtype.names[-1]
@@ -130,10 +237,10 @@ def load_maestro_fits_hvscan(filename):
         zipped = zip(axis_names_list, axis_lengths, initial_axis_values, axis_deltas)
         for axis_name, axis_length, initial_axis_value, axis_delta in zipped:
             axis_name_converted = conv[axis_name]
-            if axis_name_converted == "slit": # This assumes the center of slit is at thetax=0
-                axis_full = np.linspace(-axis_length*0.045/2, axis_length*0.045/2, num=axis_length)
+            if axis_name_converted == "slit": # This assumes the center of slit is at thetax=0 and each pixel is 0.045 deg apart
+                axis_full = np.linspace(-(axis_length-1)*0.045/2, (axis_length-1)*0.045/2, num=axis_length)
             else:
-                axis_full = np.linspace(initial_axis_value, axis_length * axis_delta + initial_axis_value, num=axis_length)
+                axis_full = np.linspace(initial_axis_value, (axis_length - 1) * axis_delta + initial_axis_value, num=axis_length)
             dims.append(axis_name_converted)
             coords[axis_name_converted] = axis_full
 
@@ -219,3 +326,52 @@ def read_maestro_fits_attrs(fits_object):
              "Slit Deflector": slit_deflect_pos}
     return attrs
 
+def load_maestro_h5_attrs(h5_object): # Reads attributes from .h5 files
+    attrs = {}
+    attrs['Pre-Comment'] = h5_object['Comments']['PreScan'][:][0][0].decode("ascii")
+    try: # Check if there's a postscan comment
+        attrs['Post-Comment'] = h5_object["Comments"]["PostScan"][:][0][0].decode("ascii")
+    except:
+        attrs['Post-Comment'] = None
+    attrs['Start Time'] = h5_object['Comments']['PreScan'][:][0][2].decode("ascii")
+    attrs['Photon Energy'] = float(h5_object['Headers']['Beamline'][:][0][2])
+    try: # Swept and Fixed modes have different headers
+        attrs['Lens Mode'] = h5_object['Headers']['DAQ_Swept'][:][9][2].decode('ascii').replace("'","")
+        attrs['Analyzer Slit'] = h5_object['Headers']['DAQ_Swept'][:][7][2].decode('ascii').replace("'","")
+        attrs['Pass Energy'] = int(h5_object['Headers']['DAQ_Swept'][:][10][2])
+    except:
+        attrs['Lens Mode'] = h5_object['Headers']['DAQ_Fixed'][:][9][2].decode('ascii').replace("'","")
+        attrs['Analyzer Slit'] = h5_object['Headers']['DAQ_Fixed'][:][7][2].decode('ascii').replace("'","")
+        attrs['Pass Energy'] = int(h5_object['Headers']['DAQ_Fixed'][:][10][2])
+    
+    attrs['EPU Polarization'] = float(h5_object['Headers']['Beamline'][:][3][2])
+    attrs['Exit Slit Vertical'] = float(h5_object['Headers']['Beamline'][:][44][2])
+    attrs['Exit Slit Horizontal'] = float(h5_object['Headers']['Beamline'][:][46][2])
+    attrs['EPU Harmonic'] = float(h5_object['Headers']['Beamline'][:][82][2])
+    attrs['EPU Grating'] = h5_object['Headers']['Beamline'][:][81][3].decode('ascii')
+
+    for i in range(7):
+        attrs[h5_object['Headers']['Motors_Logical'][:][i][3].decode('ascii')] = float(h5_object['Headers']['Motors_Logical'][:][i][2])
+    attrs['Deflector Angle'] = float(h5_object['Headers']['Motors_Logical'][:][9][2])
+
+    attrs['Cryostat A'] = h5_object['0D_Data']['Cryostat_A'][:]
+    attrs['Cryostat B'] = h5_object['0D_Data']['Cryostat_B'][:]
+    attrs['Cryostat C'] = h5_object['0D_Data']['Cryostat_C'][:]
+    attrs['Cryostat D'] = h5_object['0D_Data']['Cryostat_D'][:]
+    return attrs
+
+def print_maestro_logbook(folder): # Goes through a folder, gets all the .h5 files and prints the pre and post-scan comments
+    h5_files = [file for file in os.listdir(folder) if file.endswith(".h5")]
+    if len(h5_files) == 0:
+        raise OSError("No .h5 files found in that folder")
+    for file in h5_files:
+        with h5py.File(folder+"\\"+file,"r") as scan:
+            data = scan["Comments"]["PreScan"]
+            print("---------------------------------------")
+            print(file,"taken at",data[:][0][2].decode("ascii"))
+            print(data[:][0][0].decode("ascii"))
+            try: 
+                data2 = scan["Comments"]["PostScan"]
+                print(data2[:][0][0].decode("ascii"))
+            except:
+                continue
