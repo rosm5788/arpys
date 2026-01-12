@@ -68,12 +68,19 @@ def dewarp_spectrum(spectrum,cutoff_distance=0.1,return_fit=False):
     new_efs = []
     slit_values_fit = []
     slit_values = spectrum.slit.values
-    spectrum_ef = spectrum.arpes.guess_ef()
+
+    if spectrum.arpes.ef == None:
+        spectrum.arpes.ef = spectrum.arpes.guess_ef()
+        print(f"Dewarper: you haven't set Ef, I'm just guessing... perchance is Ef = {spectrum.arpes.ef}?")
+
     for angle in slit_values:
-        edc = spectrum.sel(slit=angle,method='nearest')
+        edc = spectrum.sel(slit=slice(angle-0.1,angle+0.1)).sum('slit')
+        edc = edc.sel(energy=slice(spectrum.arpes.ef - cutoff_distance,spectrum.arpes.ef + cutoff_distance))
         ef_guess = edc.arpes.guess_ef()
-        if np.abs(spectrum_ef - ef_guess) > cutoff_distance:
+        if np.abs(spectrum.arpes.ef - ef_guess) > cutoff_distance/2:
+            #print(f"skipping angle {angle}, Ef = {ef_guess} is too far from spectrum_ef = {spectrum.arpes.ef}")
             continue
+        #print(f"Found Ef = {ef_guess} for slit value {angle}")
 
         new_efs.append(edc.arpes.guess_ef())
         slit_values_fit.append(angle)
@@ -82,7 +89,8 @@ def dewarp_spectrum(spectrum,cutoff_distance=0.1,return_fit=False):
 
     # Create a parabolic function from the coefficients
     parabola_func = np.poly1d(coeffs)
-    print(f"made parabola func with {coeffs}")
+    print(f"I kept {len(slit_values_fit)}/{len(slit_values)} points.")
+    #print(f"made parabola func with {coeffs}")
     for i,angle in enumerate(slit_values):
         fitted_ef = parabola_func(angle)
         edc = spectrum.sel(slit=angle,method='nearest')
@@ -210,21 +218,37 @@ def symmetrize_spectra(
         raise ValueError("direction must be 'positive' or 'negative'")
 
     coords = spectra.coords[axis].values
-    result = spectra.copy(deep=True)
+    new_coords = []
 
-    for i, val in enumerate(coords):
+    for coord in coords:
+        if direction == 'positive' and coord > 0:
+            new_coords.append(-1*coord)
+            new_coords.append(coord)
+        elif direction == 'negative' and coord < 0:
+            new_coords.append(-1*coord)
+            new_coords.append(coord)
+        elif coord == 0:
+            new_coords.append(coord)
+    
+    new_coords.sort()
+    result = spectra.reindex({axis:new_coords})
+
+
+    for i, val in enumerate(new_coords):
         if (direction == 'positive' and val > 0) or (direction == 'negative' and val < 0):
             mirror_val = -val
-            j = (np.abs(coords - mirror_val)).argmin()
+            j = (np.abs(new_coords - mirror_val)).argmin()
+            #print(f"copying slit from index {i} to {j}")
             # use isel-based safe assignment
-            src = spectra.isel({axis: i})
-            result[{axis: j}] = src
+            src = result.isel({axis: i})
+            result[{axis:j}] = src
+            result[{axis:i}] = src
 
     return result
 
 def symmetrize_quadrant_3d(
     spectra: xr.DataArray,
-    keep_quadrant: tuple[str, str] = ('positive', 'positive')
+    keep_quadrant: tuple[str, str] = ('positive', 'positive'),
 ) -> xr.DataArray:
     """
     Symmetrizes a 3D ARPES map by keeping one quadrant of (slit, perp) and mirroring
@@ -238,6 +262,8 @@ def symmetrize_quadrant_3d(
         Which quadrant to keep, e.g. ('positive', 'positive') means
         keep (slit > 0, perp > 0). Other options are combinations of
         'positive' and 'negative'.
+    skip_zero : bool
+        If True, prevents overwriting slit=0 or perp=0 values.
 
     Returns
     -------
@@ -253,31 +279,49 @@ def symmetrize_quadrant_3d(
     if slit_dir not in ['positive', 'negative'] or perp_dir not in ['positive', 'negative']:
         raise ValueError("Each entry in keep_quadrant must be 'positive' or 'negative'")
 
+
     slit_vals = spectra.coords['slit'].values
     perp_vals = spectra.coords['perp'].values
 
-    # Find indices of the "kept" quadrant
-    slit_keep = slit_vals > 0 if slit_dir == 'positive' else slit_vals < 0
-    perp_keep = perp_vals > 0 if perp_dir == 'positive' else perp_vals < 0
+    new_slit=[]
+    new_perp=[]
+    for coord in slit_vals:
+        if slit_dir == 'positive' and coord > 0:
+            new_slit.append(-1*coord)
+            new_slit.append(coord)
+        elif slit_dir == 'negative' and coord < 0:
+            new_slit.append(-1*coord)
+            new_slit.append(coord)
+        elif coord == 0:
+            new_slit.append(coord)
 
-    result = spectra.copy(deep=True)
+    for coord in perp_vals:
+        if perp_dir == 'positive' and coord > 0:
+            new_perp.append(-1*coord)
+            new_perp.append(coord)
+        elif perp_dir == 'negative' and coord < 0:
+            new_perp.append(-1*coord)
+            new_perp.append(coord)
+        elif coord == 0:
+            new_perp.append(coord)
+    
+    new_perp.sort()
+    new_slit.sort()
 
-    for i, s_val in enumerate(slit_vals):
-        for j, p_val in enumerate(perp_vals):
+    slit_keep = np.array(new_slit) >= 0 if slit_dir == 'positive' else np.array(new_slit) <= 0
+    perp_keep = np.array(new_perp) >= 0 if perp_dir == 'positive' else np.array(new_perp) <= 0
+
+    result = spectra.reindex({'slit':new_slit,'perp':new_perp})
+
+    for i, s_val in enumerate(new_slit):
+        for j, p_val in enumerate(new_perp):
             if slit_keep[i] and perp_keep[j]:
-                src = spectra.isel({'slit': i, 'perp': j})
-
-                # Reflect into 3 other quadrants
+                src = result.isel({'slit': i, 'perp': j})
                 mirrors = [(-s_val, p_val), (s_val, -p_val), (-s_val, -p_val)]
                 for s_mir, p_mir in mirrors:
-                    i_mir = (np.abs(slit_vals - s_mir)).argmin()
-                    j_mir = (np.abs(perp_vals - p_mir)).argmin()
-                    result.loc[dict(slit=slit_vals[i_mir], perp=perp_vals[j_mir])] = src
-
-    # Need this to eliminate perp=0 artifacts, occasionally seeing a "bar" (with structure) along
-    # perp=0 for slit values *not* specified to keep in keep_quadrant. might be a better fix out there...
-    result = symmetrize_spectra(result,axis='slit',direction=keep_quadrant[0])
-    result = symmetrize_spectra(result,axis='perp',direction=keep_quadrant[1])
+                    i_mir = (np.abs(new_slit - s_mir)).argmin()
+                    j_mir = (np.abs(new_perp - p_mir)).argmin()
+                    result[{'slit':i_mir,'perp':j_mir}] = src
     return result
 
 def map_k_reg_fast(arpes_obj, phi0=0, theta0=0, azimuth=0, slit_orientation=0,
