@@ -120,6 +120,7 @@ def load_ssrl_52(filename):
     attrs.update(dict(f['Manipulator'].attrs))
     attrs.update(dict(f['Measurement'].attrs))
     attrs.update(dict(f['Temperature'].attrs))
+    attrs.update({key:value/1000 for key,value in dict(f['Resolution'].attrs).items()}) # Puts the energy resolution in eV, rather than meV for consistency with the units on the spectra
     attrs.update(dict(f['UserSettings'].attrs))
     attrs.update(dict(f['UserSettings']['AnalyserSlit'].attrs))
     f.close()
@@ -277,6 +278,7 @@ def load_ssrl_52_photonEscan(filename):
     attrs.update(dict(f['Manipulator'].attrs))
     attrs.update(dict(f['Measurement'].attrs))
     attrs.update(dict(f['Temperature'].attrs))
+    attrs.update({key:value/1000 for key,value in dict(f['Resolution'].attrs).items()}) # Puts the energy resolution in eV, rather than meV for consistency with the units on the spectra
     attrs.update(dict(f['UserSettings'].attrs))
     attrs.update(dict(f['UserSettings']['AnalyserSlit'].attrs))
     
