@@ -518,12 +518,12 @@ class Arpes:
         flattened = higher_dimension_xr.sum('ky')
         return flattened
     
-    def arbitrary_map_cut(self,angle,phi0=0,theta0=0,targeting_mode=False,interp_method='linear'):
-        # angle is in deg wrt to slit/kx, phi0 is horizontal offset in slit/kx, theta0 is vertical offset in perp/ky
+    def arbitrary_map_cut(self,azimuth,phi0=0,theta0=0,targeting_mode=False,interp_method='linear'):
+        # azimuth is in deg wrt to slit/kx, phi0 is horizontal offset in slit/kx, theta0 is vertical offset in perp/ky
         def cut_line(t,phi,x0,y0):
             return (x0+t*np.cos(phi),y0+t*np.sin(phi))
-        angle_deg = angle
-        angle = np.deg2rad(angle)
+        azimuth_deg = azimuth
+        azimuth = np.deg2rad(azimuth)
         if 'perp' in self._obj.coords:
             data = self._obj.copy().transpose('energy','slit','perp')
             data.arpes.ef = self.ef
@@ -542,16 +542,16 @@ class Arpes:
             raise ValueError("I don't think this is an arpes map")
         if phi0 > xmax or phi0 < xmin or theta0 > ymax or theta0 < ymin:
             raise ValueError("You can't have the center of the map cut be outside of the map, silly")
-        if angle_deg > 0 and angle_deg < 90:
-            tmin = max((xmin-phi0)/np.cos(angle),(ymin-theta0)/np.sin(angle))
-            tmax = min((xmax-phi0)/np.cos(angle),(ymax-theta0)/np.sin(angle))
-        elif angle_deg < 0 and angle_deg > -90:
-            tmin = max((xmin-phi0)/np.cos(angle),-(ymin-theta0)/np.sin(angle))
-            tmax = min((xmax-phi0)/np.cos(angle),-(ymax-theta0)/np.sin(angle))
-        elif angle_deg == 0: # This is here to avoid the divide by zero error for the /np.sin
+        if azimuth_deg > 0 and azimuth_deg < 90:
+            tmin = max((xmin-phi0)/np.cos(azimuth),(ymin-theta0)/np.sin(azimuth))
+            tmax = min((xmax-phi0)/np.cos(azimuth),(ymax-theta0)/np.sin(azimuth))
+        elif azimuth_deg < 0 and azimuth_deg > -90:
+            tmin = max((xmin-phi0)/np.cos(azimuth),-(ymin-theta0)/np.sin(azimuth))
+            tmax = min((xmax-phi0)/np.cos(azimuth),-(ymax-theta0)/np.sin(azimuth))
+        elif azimuth_deg == 0: # This is here to avoid the divide by zero error for the /np.sin
             tmin,tmax = xmin-phi0,xmax-phi0
-        elif angle_deg == 90 or angle_deg == -90: # This avoids issues with the /np.cos
-            tmin,tmax = np.sign(angle)*(ymin-theta0),np.sign(angle)*(ymax-theta0)
+        elif azimuth_deg == 90 or azimuth_deg == -90: # This avoids issues with the /np.cos
+            tmin,tmax = np.sign(azimuth)*(ymin-theta0),np.sign(azimuth)*(ymax-theta0)
         else:
             raise ValueError("Angle with respect to slit/kx should be between -90 and 90 deg")
         if targeting_mode: # Targeting mode just plots the center and path of the cut you're taking
@@ -563,7 +563,7 @@ class Arpes:
             else:
                 data.sel(binding=slice(-0.1,0.05)).sum('binding').plot(x='kx',y='ky',cmap='inferno',add_colorbar=False,robust=True,ax=ax)
             ax.scatter([phi0],[theta0],50,'red')
-            points = cut_line(np.linspace(tmin,tmax,51,endpoint=True),angle,phi0,theta0)
+            points = cut_line(np.linspace(tmin,tmax,51,endpoint=True),azimuth,phi0,theta0)
             ax.plot(points[0],points[1])
             ax.set_aspect(1)
             ax.set_title("Path of Selected Map Cut")
@@ -571,7 +571,7 @@ class Arpes:
         num_points = len(data[0])+1-(len(data[0])%2)
         num_energies = len(data) # I've transposed the data such that either binding or energy is the first axis
         t_vals = np.linspace(tmin,tmax,num_points,endpoint=True)
-        points_x,points_y = cut_line(t_vals,angle,phi0,theta0)
+        points_x,points_y = cut_line(t_vals,azimuth,phi0,theta0)
         interp_points = np.zeros((num_energies*num_points,3))
         for j in range(num_energies):
             for i in range(num_points):

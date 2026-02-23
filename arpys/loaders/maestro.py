@@ -350,9 +350,10 @@ def load_maestro_h5_attrs(h5_object): # Reads attributes from .h5 files
     attrs['EPU Harmonic'] = float(h5_object['Headers']['Beamline'][:][82][2])
     attrs['EPU Grating'] = h5_object['Headers']['Beamline'][:][81][3].decode('ascii')
     attrs['Beam Energy Res'] = float(h5_object['Headers']['Beamline'][:][15][2])
-    analyzer_slit_size = float(attrs['Analyzer Slit'][4:7]) # Grabs the number from the string
-    if analyzer_slit_size < 0.2 or analyzer_slit_size > 0.5:
-        analyzer_slit_size = np.nan # Making sure I don't have an impossible slit size
+    try:
+        analyzer_slit_size = float(attrs['Analyzer Slit'][4:7]) # Grabs the number from the string
+    except:
+        analyzer_slit_size = np.nan # In case there's an edge case I don't know about
     attrs['Analyzer Energy Res'] = analyzer_slit_size/400 * attrs['Pass Energy'] # Formula for R4000 taken from https://www.helmholtz-berlin.de/pubbin/igama_output?modus=datei&did=147
     attrs['Total Energy Res'] = np.sqrt(attrs['Beam Energy Res']**2 + attrs['Analyzer Energy Res']**2)
 
