@@ -41,6 +41,9 @@ def normalize_3D(map):
     return perp_normed
 
 def dewarp_spectrum(spectrum,cutoff_distance=0.1,return_fit=False):
+    import numpy as np
+    import xarray as xr
+    from scipy.ndimage import uniform_filter1d
     """
     Attempts to dewarp a spectrum collected with a straight slit
     by finding eF at each slit value, then fitting to a parabola
@@ -141,25 +144,118 @@ def laplacian(data, bwx=5,bwy=5, w=1):
 
 # Curvature function for ARPES data from paper below.
 # Parameters are tricky and require some fidgeting still...
-def cv2d(data, bwx=5, bwy=5, c1=0.001, c2=0.001, w=1):
-    from astropy.convolution import convolve, Gaussian2DKernel
-    import numpy as np
-    coords = list(data.coords)
-    x = data.coords[coords[0]].values
-    y = data.coords[coords[1]].values
-    data_smth = convolve(data, Gaussian2DKernel(x_stddev=bwx,y_stddev=bwy))
-    dx = np.gradient(data_smth, axis=0)
-    dy = np.gradient(data_smth, axis=1) * w
-    d2x = np.gradient(np.gradient(data_smth, x, axis=0), x, axis=0)
-    d2y = np.gradient(np.gradient(data_smth, y, axis=1), y, axis=1) * w * w
-    dxdy = np.gradient(np.gradient(data_smth, x, axis=0), y, axis=1) * w
+def cv2d_igor_style(data, num_x=2, box_x=5, num_y=2, box_y=5, factor=0.1, weight_2d=1.0):
+    """
+    Replicates the Curvature2w function from the Zhang Igor Macro.
+    
+    Parameters:
+    -----------
+    data : xarray.DataArray
+        Input 2D data (usually Energy vs slit).
+    num_x, num_y : int
+        Number of smoothing passes (smooth times).
+    box_x, box_y : int
+        Boxcar window width (pixels).
+    factor : float
+        The arbitrary curvature factor (C0).
+    weight_2d : float
+        Manual weight adjustment (usually 1.0).
+        
+    Returns:
+    --------
+    curvature : xarray.DataArray
+    """
+    
+    # 1. Extract values and coords
+    # Assuming data is (y, x) or (Energy, Momentum)
+    vals = data.values
+    coords = data.coords
+    y_coord = data.coords[data.dims[0]].values
+    x_coord = data.coords[data.dims[1]].values
+    
+    # Calculate physical step sizes
+    dy = np.abs(y_coord[1] - y_coord[0])
+    dx = np.abs(x_coord[1] - x_coord[0])
+    
+    # Igor calculates weight based on aspect ratio to normalize units
+    # weight = (dx/dy)^2
+    weight = (dx / dy) ** 2
+    if weight_2d > 0:
+        weight *= weight_2d
+    
+    # 2. Smoothing (IGOR uses Boxcar / Sliding Average)
+    # Igor "Smooth" with /B flag is a boxcar. 
+    # It runs 'num' passes of a boxcar filter of width 'box'.
+    
+    # Smooth along Y (dim 0)
+    smooth_y = vals.copy()
+    for _ in range(num_y):
+        smooth_y = uniform_filter1d(smooth_y, size=box_y, axis=0, mode='nearest')
+    
+    # Smooth along X (dim 1)
+    smooth_x = vals.copy()
+    for _ in range(num_x):
+        smooth_x = uniform_filter1d(smooth_x, size=box_x, axis=1, mode='nearest')
+        
+    # Note: Igor calculates mixed derivatives by smoothing one way, diffing, then smoothing other way.
+    # We will approximate this by generating a "master" smoothed array for cross-terms
+    # However, to strictly follow the macro, we calculate derivatives on specific smoothed versions.
+    
+    # 3. Derivatives
+    # Igor: Differentiate/DIM=1 (Y direction)
+    # np.gradient divides by step size (dy), matching Igor's physical derivative
+    
+    fy = np.gradient(smooth_y, y_coord, axis=0)
+    fyy = np.gradient(fy, y_coord, axis=0) # Second deriv Y
+    
+    # Igor: Differentiate/DIM=0 (X direction)
+    fx = np.gradient(smooth_x, x_coord, axis=1)
+    fxx = np.gradient(fx, x_coord, axis=1) # Second deriv X
+    
+    # Cross term: DM1 on fy (which was smoothed in Y), then smooth in X, then diff in X
+    # Igor: DM1($diff1maty, $diff2matyx, num2, box2, 2)
+    # This means: Take fy, smooth it in X, then diff in X.
+    fy_smooth_x = fy.copy()
+    for _ in range(num_x):
+        fy_smooth_x = uniform_filter1d(fy_smooth_x, size=box_x, axis=1, mode='nearest')
+    fyx = np.gradient(fy_smooth_x, x_coord, axis=1)
 
-    # 2D curvature - https://doi.org/10.1063/1.3585113
-    cv2d = (np.abs((1 + (c1*dx)**2)*c2*d2y - 2*(c1*c2*dx*dy)*dxdy) +
-            np.abs((1 + (c2*dy)**2)*c1*d2x)) / np.abs(1 + (c1*dx)**2 + (c2*dy)**2)**1.5
-    curvature = xr.DataArray(cv2d, dims=data.dims,
-                            coords=data.coords, attrs=data.attrs)
-    return curvature
+    # 4. Normalization Factor Calculation
+    # Igor: avgv = abs(wavemin($diff1maty)) -> Max absolute gradient Y
+    # Igor: avgh = abs(wavemin($diff1matx)) -> Max absolute gradient X
+    
+    avg_v = np.max(np.abs(fy))
+    avg_h = np.max(np.abs(fx))
+    
+    # Igor: avg = max(avgv*avgv, weight*avgh*avgh)
+    # This defines the "Scale" of the gradient squared
+    avg_grad_sq = np.max([avg_v**2, weight * avg_h**2])
+    
+    # The "Arbitrary Factor" term in the formula
+    # C0 = factor * avg
+    C0 = factor * avg_grad_sq
+
+    # 5. The Curvature Formula (Replicating Igor 'curvature2w' exactly)
+    # Numerator:
+    # ((C0 + w*fx^2)*fyy - 2*w*fx*fy*fyx + w*(C0 + fy^2)*fxx)
+    
+    term1 = (C0 + weight * fx**2) * fyy
+    term2 = 2 * weight * fx * fy * fyx
+    term3 = weight * (C0 + fy**2) * fxx
+    
+    numerator = term1 - term2 + term3
+    
+    # Denominator:
+    # (C0 + w*fx^2 + fy^2)^1.5
+    denominator = (C0 + weight * fx**2 + fy**2) ** 1.5
+    
+    # Avoid division by zero (though C0 usually prevents this)
+    denominator[denominator == 0] = 1e-10
+    
+    cv2d_result = numerator / denominator
+    
+    # Return as xarray
+    return xr.DataArray(cv2d_result, dims=data.dims, coords=data.coords)
 
 #aligns a photon_energy scan so that Ef = 0 binding, to correct
 #monochromator drift or similar effects
