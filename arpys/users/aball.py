@@ -8,12 +8,6 @@ plt.rcParams['figure.dpi'] = 150
 plt.rcParams['image.cmap'] = 'inferno'
 import os
 
-def parabola_plotter(x0,y0,a,xrange=1,**plot_kwargs):
-    def parabola(x,x0,y0,a):
-        return a*(x-x0)**2 + y0
-    points = np.linspace(-xrange,xrange,100,True)
-    plt.plot(points,parabola(points,x0,y0,a),**plot_kwargs)
-
 def parabola_arpes_fit(cut:xr.DataArray,kmin,kmax,emin,emax,p0,inner_exclude=0.0,energy_res=None,plot_results=False,exclude_side=None,do_edcs=False,edc_emin=-0.6,edc_kmin=None,edc_kmax=None,return_edcs=False,return_measurables=False):
     """
     :param p0: Parabola fit intitial guess: [x0,y0,a]
@@ -146,7 +140,7 @@ def parabola_arpes_fit(cut:xr.DataArray,kmin,kmax,emin,emax,p0,inner_exclude=0.0
     kf_uncert = np.sqrt(dkfermi_dy0**2*uncerts[1]**2 + dkdfermi_da**2*uncerts[2]**2 + 2*dkfermi_dy0*dkdfermi_da*covmatrix[1,2])
     print(f"Fit Band Bottom: {params[1]:.4f} ± {uncerts[1]:.4f} eV\nk Fermi: {k_fermi:.4f} ± {kf_uncert:.4f} A^-1\nBand Mass: {m_eff:.4f} ± {m_eff_uncert:.4f} m_e")
     if return_edcs:
-        params, uncerts, edc_fits
+        return params, uncerts, edc_fits
     elif return_measurables: # Returns BB, kf, m_eff rather than parabola fit parameters
         return (params[1],k_fermi,m_eff), (uncerts[1],kf_uncert,m_eff_uncert)
     else: return params, uncerts
