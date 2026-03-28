@@ -24,6 +24,135 @@ def be_to_ke(hv,spectra):
     reassigned = spectra.assign_coords({'energy':ke})
     return reassigned
 
+def stitch_cuts(cuts, bounds=None, labels=None, normalize='max', plot=True):
+    """
+    Stitches a sequential list of 2D cuts (xarray DataArrays) together along their momentum axes.
+
+    Parameters
+    ----------
+    cuts : list of xr.DataArray
+        Sequential list of 2D cuts.
+    bounds : list of tuple, optional
+        List of (start_k, end_k) tuples specifying the momentum range to extract
+        from each cut. E.g.[(0, 1.5), (1.5, 3.0)]. If start_k > end_k, the
+        cut will be reversed to match the requested traversal direction.
+    labels : list of str, optional
+        Labels for the boundaries (e.g.,['$\\Gamma$', 'X', 'M', '$\\Gamma$']). Needs len(cuts) + 1.
+    normalize : str or bool, optional
+        How to normalize the intensities of the cuts so they visually match.
+        'mean' (default if True) divides by the mean counts of the sliced cut.
+        'max' divides by the maximum counts of the sliced cut.
+        'sum' divides by the strict total sum.
+        False disables normalization.
+    plot : bool
+        Whether to automatically plot the stitched path.
+    """
+    if bounds is not None and len(bounds) != len(cuts):
+        raise ValueError(f"Number of bounds ({len(bounds)}) must match number of cuts ({len(cuts)}).")
+
+    segments = []
+    node_positions = [0]
+    cumulative_dist = 0
+
+    # Attempt to determine the vertical dimension from the first cut
+    z_dim = 'binding' if 'binding' in cuts[0].dims else 'energy'
+    
+    # Define the master energy axis from the first cut to align all others
+    target_z_coords = cuts[0].coords[z_dim]
+
+    for i, cut in enumerate(cuts):
+        # Find the momentum dimension (the one that isn't the vertical dimension)
+        mom_dim = [d for d in cut.dims if d != z_dim][0]
+
+        if bounds is not None:
+            k_start, k_end = bounds[i]
+            min_k, max_k = min(k_start, k_end), max(k_start, k_end)
+
+            # Safely slice the xarray based on how its coordinates are ordered
+            if cut[mom_dim].values[0] > cut[mom_dim].values[-1]:
+                cut = cut.sel({mom_dim: slice(max_k, min_k)})
+            else:
+                cut = cut.sel({mom_dim: slice(min_k, max_k)})
+
+            mom_vals = cut[mom_dim].values
+            if len(mom_vals) == 0:
+                raise ValueError(f"Bounds {bounds[i]} for cut {i} resulted in an empty slice. "
+                                    f"Check that the cut's momentum axis covers this range.")
+
+            # Check if the traversal direction requires us to flip the data array
+            dist_to_start = abs(mom_vals[0] - k_start)
+            dist_to_end = abs(mom_vals[0] - k_end)
+            if dist_to_start > dist_to_end:
+                mom_vals = mom_vals[::-1]
+                cut = cut.isel({mom_dim: slice(None, None, -1)})
+
+        else:
+            mom_vals = cut[mom_dim].values
+            # If no bounds provided, enforce monotonic progression by default
+            if mom_vals[-1] < mom_vals[0]:
+                mom_vals = mom_vals[::-1]
+                cut = cut.isel({mom_dim: slice(None, None, -1)})
+
+        # --- NORMALIZATION ---
+        # Normalize after bounds are applied so only the visible data dictates the scale
+        if normalize:
+            if normalize == 'max':
+                cut = cut / cut.max()
+            elif normalize == 'sum':
+                cut = cut / cut.sum()
+            else:  # Default 'mean' logic
+                cut = cut / cut.mean()
+
+        length = np.abs(mom_vals[-1] - mom_vals[0])
+
+        # Re-center the momentum axis of this cut so it starts at cumulative_dist.
+        # Using np.abs() ensures the path always increases monotonically.
+        shifted_mom = cumulative_dist + np.abs(mom_vals - mom_vals[0])
+
+        # Standardize the dimension name for concatenation
+        cut_renamed = cut.rename({mom_dim: 'kx'}).assign_coords({'kx': shifted_mom})
+
+        # Interpolate energy axis to exactly match the first cut
+        if i > 0:
+            cut_renamed = cut_renamed.interp(
+                {z_dim: target_z_coords}, 
+                method='linear', 
+                kwargs={'fill_value': 'extrapolate'} # Prevents edge NaNs if slightly misaligned
+            )
+
+        # Clip the final momentum point off all but the last cut to prevent duplicate boundary columns
+        if i < len(cuts) - 1:
+            cut_renamed = cut_renamed.isel({'kx': slice(0, -1)})
+
+        segments.append(cut_renamed)
+
+        cumulative_dist += length
+        node_positions.append(cumulative_dist)
+
+    # Because all z_dim coordinates now perfectly match target_z_coords,
+    # xr.concat will no longer interleave mismatched values
+    stitched = xr.concat(segments, dim='kx')
+
+    if plot:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        stitched.plot(x='kx', y=z_dim, ax=ax, cmap='viridis', robust=True)
+        ax.set_xticks(node_positions)
+        
+        if labels is not None:
+            if len(labels) != len(node_positions):
+                raise ValueError(f"Number of labels ({len(labels)}) must match number of nodes ({len(node_positions)}).")
+            ax.set_xticklabels(labels)
+        else:
+            ax.set_xticklabels([f"P{i+1}" for i in range(len(node_positions))])
+
+        for pos in node_positions:
+            ax.axvline(pos, color='white', linestyle='--', alpha=0.5)
+
+        ax.set_ylabel(f"{z_dim.capitalize()} (eV)")
+        ax.set_xlabel("Momentum path ($1/\\AA$)")
+        return stitched, fig, ax
+
+    return stitched, node_positions
 
 def bin_ndarray(ndarray, new_shape, operation='sum'):
     """
@@ -589,6 +718,172 @@ class Arpes:
             cut_xarray = xr.DataArray(cut_data, dims=['binding', 'kx'], coords={'binding': data.binding, 'kx': t_vals}, attrs=data.attrs)
         return cut_xarray
 
+    def map_high_symmetry_path(self, points, labels=None, num_points=500, interp_method='linear', 
+                               plot=True, targeting_mode=False):
+            """
+            Extracts and stitches a continuous high-symmetry path from a k-converted 3D map.
+
+            Parameters
+            ----------
+            points : list of tuple
+                List of (kx, ky) coordinates defining the path nodes. e.g.[(0, 0), (1, 0), (1, 1), (0, 0)]
+            labels : list of str, optional
+                Labels for the high-symmetry points, e.g.,['$\\Gamma$', 'X', 'M', '$\\Gamma$']
+            num_points : int
+                Total number of interpolation points to generate across the entire path.
+            interp_method : str
+                Interpolation method for RegularGridInterpolator ('linear', 'nearest', etc.)
+            plot : bool
+                Whether to automatically plot the stitched path.
+            targeting_mode : bool
+                If True, plots a Fermi surface slice with the path overlaid instead of extracting the cut.
+            """
+            if 'ky' not in self._obj.coords or 'kx' not in self._obj.coords:
+                raise ValueError("Map does not appear to be k-converted. Need 'kx' and 'ky' coordinates.")
+
+            data = self._obj.copy()
+            # Find if vertical axis is binding or energy
+            z_dim = 'binding' if 'binding' in data.dims else 'energy'
+
+            # --- TARGETING MODE ---
+            if targeting_mode:
+                fig, ax = plt.subplots(figsize=(6, 6))
+                
+                # Select integration window near Fermi Level depending on axis
+                if z_dim == 'binding':
+                    val_min, val_max = -0.1, 0.05
+                else:
+                    if getattr(self, 'ef', None) is None:
+                        raise AttributeError("Need map.arpes.ef set for targeting mode if not k-converted to binding energy.")
+                    val_min, val_max = self.ef - 0.1, self.ef + 0.05
+                    
+                # Safely slice regardless of whether coordinates are ascending or descending
+                z_vals = data[z_dim].values
+                if z_vals[0] > z_vals[-1]:
+                    s = slice(max(val_min, val_max), min(val_min, val_max))
+                else:
+                    s = slice(min(val_min, val_max), max(val_min, val_max))
+                    
+                # Bin the map
+                fs_map = data.sel({z_dim: s}).sum(z_dim)
+                
+                # Plot Fermi Surface map with viridis
+                fs_map.plot(x='kx', y='ky', cmap='viridis', add_colorbar=True, robust=True, ax=ax)
+                
+                # Extract x and y coordinates for the path
+                pts_x =[p[0] for p in points]
+                pts_y = [p[1] for p in points]
+                
+                # Plot overlaid path. Bright red provides maximum contrast against Viridis.
+                ax.plot(pts_x, pts_y, color='red', linestyle='--', linewidth=2, zorder=3)
+                ax.scatter(pts_x, pts_y, color='red', s=70, edgecolors='white', linewidths=1.5, zorder=4)
+                
+                # Add labels if provided
+                if labels is not None:
+                    if len(labels) != len(points):
+                        raise ValueError(f"Number of labels ({len(labels)}) must match number of points ({len(points)}).")
+                    for (x, y), label in zip(points, labels):
+                        # Draw label with a red background box and white text for high visibility
+                        ax.annotate(label, (x, y), color='white', weight='bold', fontsize=14,
+                                    xytext=(7, 7), textcoords='offset points',
+                                    bbox=dict(boxstyle='round,pad=0.2', fc='red', alpha=0.7, ec='none'),
+                                    zorder=5)
+                        
+                ax.set_aspect('equal')
+                ax.set_title("Targeting Mode: High-Symmetry Path Overlay")
+                ax.set_xlabel("$k_x$ ($1/\\AA$)")
+                ax.set_ylabel("$k_y$ ($1/\\AA$)")
+                
+                return fig, ax
+            
+            # --- STANDARD PATH EXTRACTION ---
+            data = data.transpose(z_dim, 'kx', 'ky')
+
+            # Setup 3D interpolator
+            interp_object = RegularGridInterpolator(
+                (data[z_dim].values, data.kx.values, data.ky.values),
+                data.values, bounds_error=False, fill_value=np.nan
+            )
+
+            points = np.array(points)
+            diffs = np.diff(points, axis=0)
+            segment_lengths = np.linalg.norm(diffs, axis=1)
+            total_length = np.sum(segment_lengths)
+
+            cumulative_dist = 0
+            node_positions = [0]
+            
+            all_cut_data =[]
+            all_k_path =[]
+
+            for i in range(len(points) - 1):
+                p_start = points[i]
+                p_end = points[i+1]
+                seg_length = segment_lengths[i]
+
+                # Distribute the total number of points proportionally based on physical k-distance
+                n_pts = int(np.round(num_points * (seg_length / total_length)))
+                if n_pts == 0:
+                    n_pts = 2  # Fallback to prevent crash on tiny segments
+
+                # Exclude the endpoint for all but the final segment to prevent duplicate data columns at nodes
+                t = np.linspace(0, 1, n_pts, endpoint=(i == len(points) - 2))
+
+                # Parametric coordinates for the segment line
+                seg_kx = p_start[0] + t * (p_end[0] - p_start[0])
+                seg_ky = p_start[1] + t * (p_end[1] - p_start[1])
+                
+                # The cumulative 1D axis representing the distance along the path
+                seg_k_path = cumulative_dist + t * seg_length
+                all_k_path.extend(seg_k_path)
+
+                # Generate evaluation coordinates for interpolation
+                z_vals = data[z_dim].values
+                num_z = len(z_vals)
+
+                Z, T_idx = np.meshgrid(z_vals, np.arange(len(t)), indexing='ij')
+                pts_interp = np.stack([
+                    Z.flatten(),
+                    seg_kx[T_idx.flatten()],
+                    seg_ky[T_idx.flatten()]
+                ], axis=-1)
+
+                # Do the interpolation and reshape back to (Energy, Path Length)
+                interp_res = interp_object(pts_interp, method=interp_method).reshape((num_z, len(t)))
+                all_cut_data.append(interp_res)
+
+                cumulative_dist += seg_length
+                node_positions.append(cumulative_dist)
+
+            stitched_data = np.concatenate(all_cut_data, axis=1)
+            stitched = xr.DataArray(
+                stitched_data,
+                dims=[z_dim, 'k_path'],
+                coords={z_dim: z_vals, 'k_path': all_k_path},
+                attrs=data.attrs
+            )
+
+            if plot:
+                fig, ax = plt.subplots(figsize=(8, 6))
+                stitched.plot(x='k_path', y=z_dim, ax=ax, cmap='viridis', robust=True)
+                ax.set_xticks(node_positions)
+                
+                if labels is not None:
+                    if len(labels) != len(node_positions):
+                        raise ValueError(f"Number of labels ({len(labels)}) must match number of nodes ({len(node_positions)}).")
+                    ax.set_xticklabels(labels)
+                else:
+                    ax.set_xticklabels([f"P{i+1}" for i in range(len(node_positions))])
+
+                for pos in node_positions:
+                    ax.axvline(pos, color='white', linestyle='--', alpha=0.5)
+
+                ax.set_ylabel(f"{z_dim.capitalize()} (eV)")
+                ax.set_xlabel("Momentum path ($1/\\AA$)")
+                ax.set_title("High-Symmetry Path")
+                return stitched, fig, ax
+
+            return stitched, node_positions
 
     # Kz maps should always be in binding energy, will need to shift off using a fixed work-function to recover
     # kinetic energy for k conversion
