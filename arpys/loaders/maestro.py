@@ -1,5 +1,6 @@
 import numpy as np
 import xarray as xr
+xr.set_options(keep_attrs=True)
 from astropy.io import fits
 import arpys
 import h5py

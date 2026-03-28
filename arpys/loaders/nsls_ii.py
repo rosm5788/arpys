@@ -5,17 +5,61 @@ xr.set_options(keep_attrs=True)
 import numpy as np
 from pathlib import Path
 import pandas as pd
-from io import StringIO
 import io
 from zipfile import ZipFile
+from nexusformat.nexus import nxload
 
 try:
     import igor.binarywave as igor
     import igor.igorpy as igorpy
 except ImportError as e:
     import warnings
-    warnings.warn('You cannot import HiSOR data without igor module')
+    warnings.warn('You cannot import NSLS-II .ibw files without igor module')
 
+def load_nsls_nexus(filename):
+    file = nxload(filename)
+    deflector_x = np.array(file['entry']['data']['deflector_x'][:])
+    try: 
+        hv = np.array(file['entry']['instrument']['monochromator']['energy'][:])
+    except TypeError:
+        hv = file['entry']['instrument']['monochromator']['energy'].nxvalue
+    counts = np.array(file['entry']['data']['data'][:])
+    energies = np.array(file['entry']['data']['energies'][:])
+    slit_angles = np.array(file['entry']['data']['angles'][:])
+
+    if len(deflector_x) > 1:
+        coords = {'perp': deflector_x, 'slit':slit_angles, 'energy': energies}
+    elif len(hv) > 1:
+        coords = {'photon_energy': hv, 'slit':slit_angles, 'energy': energies}
+    else:
+        coords = {'slit': slit_angles, 'energy': energies}
+        counts = counts[0]
+        
+    metadata = load_nsls_nexus_attrs(file)
+    metadata['Deflector'] = deflector_x
+    metadata['Photon Energy'] = hv
+    return xr.DataArray(counts, dims=list(coords.keys()), coords=coords, attrs=metadata)
+
+def load_nsls_nexus_attrs(nexusobj):
+    attrs = {}
+
+    manuipulator_name_dict = {'X':'pos_x','Y':'pos_y','Z':'pos_z','Rx':'pos_Rx','Rx':'pos_Ry','Rz':'pos_Rz','Bias Voltage':'sample_bias','Stinger Temp':'Stinger'}
+    for attr_name in manuipulator_name_dict:
+        attrs[attr_name] = nexusobj['entry']['instrument']['manipulator'][manuipulator_name_dict[attr_name]].nxvalue
+    
+    monocromator_name_dict = {'Exit Slit Vertical':'v_gap','Exit Slit Horizontal':'h_gap','EPU Grating':'grating'}
+    for attr_name in monocromator_name_dict:
+        attrs[attr_name] = nexusobj['entry']['instrument']['monochromator'][monocromator_name_dict[attr_name]].nxvalue
+
+    analyzer_name_dict = {'Acquisition Mode':'acq_mode','Lens Mode':'lens_mode','Pass Energy':'pass_energy','Analyzer Slit Direction':'entrance_slit_direction','Analyzer Slit Size':'entrance_slit_size','Analyszer Slit Shape':'entrance_slit_shape','Iterations':'number_of_iterations','Frame Time':'time_for_frames'}
+    for attr_name in analyzer_name_dict:
+        attrs[attr_name] = nexusobj['entry']['instrument']['analyzer'][analyzer_name_dict[attr_name]].nxvalue
+        
+    attrs['Date'] = nexusobj['entry']['note']['date'].nxvalue
+    attrs['Description'] = nexusobj['entry']['note']['description'].nxvalue
+    return attrs
+
+# Everything below here is for data taken April 2025 or earlier ------------------------------------------------------
 # NSLS outputs all .pxt or .ibw files into a directory. the .pxt files appear to be
 # easier to manage (since their names are easier to mimic with the generate filenames function)
 # if you want an ibw version, copy-paste this function (adding _ibw) and use load_nsls_ibw
@@ -304,7 +348,7 @@ def load_raster_map(LOGFILE):
         progx = row['progx']
         progy = row['progy']
         progz = row['progz']
-        data = load_hisor_ibw(filename)
+        data = load_nsls_ibw(filename)
         data.attrs.update({'progx': progx, 'progy': progy, 'progz': progz})
         data_array.append(data)
 
@@ -337,7 +381,7 @@ def load_raster_1d(logfile):
         progx = row['progx']
         progy = row['progy']
         progz = row['progz']
-        data = load_hisor_ibw(filename)
+        data = load_nsls_ibw(filename)
         data.attrs.update({'progx': progx, 'progy': progy, 'progz': progz})
         data_array.append(data)
 
