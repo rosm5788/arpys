@@ -19,18 +19,13 @@ except ImportError as e:
 def load_nsls_nexus(filename):
     file = nxload(filename)
     deflector_x = np.array(file['entry']['data']['deflector_x'][:])
-    try: 
-        hv = np.array(file['entry']['instrument']['monochromator']['energy'][:])
-    except TypeError:
-        hv = file['entry']['instrument']['monochromator']['energy'].nxvalue
+    hv = file['entry']['instrument']['monochromator']['energy'].nxvalue
     counts = np.array(file['entry']['data']['data'][:])
     energies = np.array(file['entry']['data']['energies'][:])
     slit_angles = np.array(file['entry']['data']['angles'][:])
 
     if len(deflector_x) > 1:
         coords = {'perp': deflector_x, 'slit':slit_angles, 'energy': energies}
-    elif len(hv) > 1:
-        coords = {'photon_energy': hv, 'slit':slit_angles, 'energy': energies}
     else:
         coords = {'slit': slit_angles, 'energy': energies}
         counts = counts[0]
@@ -39,6 +34,12 @@ def load_nsls_nexus(filename):
     metadata['Deflector'] = deflector_x
     metadata['Photon Energy'] = hv
     return xr.DataArray(counts, dims=list(coords.keys()), coords=coords, attrs=metadata)
+
+def load_nsls_nexus_hvscan(filenamebase,start,end):
+
+    filenames = [filenamebase + "0"*len(str(end)-len(str(i)))+str(i) for i in range(start,end+1)]
+    print(filenames)
+
 
 def load_nsls_nexus_attrs(nexusobj):
     attrs = {}
