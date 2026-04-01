@@ -35,16 +35,41 @@ def load_nsls_nexus(filename):
     metadata['Photon Energy'] = hv
     return xr.DataArray(counts, dims=list(coords.keys()), coords=coords, attrs=metadata)
 
-def load_nsls_nexus_hvscan(filenamebase,start,end):
-
-    filenames = [filenamebase + "0"*len(str(end)-len(str(i)))+str(i) for i in range(start,end+1)]
-    print(filenames)
-
+def load_nsls_nexus_hvscan(filenamebase,start,end,wf=4.4):
+    """
+    :param filenamebase: String with the characters all of the photon energy scan files have in common coming from the left (this function will add appropriate zeroes for lower numbers and the .nxs at the end)
+    :param start: Number of the first file
+    :param end: Number of the last file
+    :param wf: Workfunction in eV (default is 4.4 eV)
+    """
+    filenames = [filenamebase + "0"*(len(str(end))-len(str(i)))+str(i)+".nxs" for i in range(start,end+1)]
+    scans = []
+    for filename in filenames:
+        with nxload(filename) as file:
+            deflector_x = np.array(file['entry']['data']['deflector_x'][:])
+            hv = file['entry']['instrument']['monochromator']['energy'].nxvalue
+            counts = np.array(file['entry']['data']['data'][:])
+            energies = np.array(file['entry']['data']['energies'][:])
+            slit_angles = np.array(file['entry']['data']['angles'][:])
+            if len(deflector_x) > 1:
+                raise NotImplementedError("One of the scans in the filerange you gave me is a map, I'm not built for that")
+            coords = {'slit': slit_angles, 'binding': energies - hv + wf,'photon_energy':hv}
+            counts = counts[0]
+            hv_slice = xr.DataArray(counts, dims=['slit','binding'], coords=coords)
+            scans.append(hv_slice)
+        min_binding = np.max([[scan.binding.min() for scan in scans]])
+        max_binding = np.max([[scan.binding.max() for scan in scans]])
+        dE = scans[0].binding.values[1] - scans[0].binding.values[0] # Spacing of the spectras' energy grid
+        binding_vals = np.array([min_binding + dE*i for i in range(round((max_binding - min_binding)/dE) + 2)]) # Has it so binding goes from the minimum of all the scans' energy to the max, spaced by the original energy spacing (in case of monocromator drift)
+        scans_meshed = [scan.interp(binding=binding_vals,kwargs={"fill_value": 0}) for scan in scans]
+    hvscan = xr.concat(scans_meshed,'photon_energy')
+    hvscan.attrs = load_nsls_nexus_attrs(nxload(filenames[0]))
+    return hvscan
 
 def load_nsls_nexus_attrs(nexusobj):
     attrs = {}
 
-    manuipulator_name_dict = {'X':'pos_x','Y':'pos_y','Z':'pos_z','Rx':'pos_Rx','Rx':'pos_Ry','Rz':'pos_Rz','Bias Voltage':'sample_bias','Stinger Temp':'Stinger'}
+    manuipulator_name_dict = {'X':'pos_x','Y':'pos_y','Z':'pos_z','Rx':'pos_Rx','Rx':'pos_Ry','Rz':'pos_Rz','Bias Voltage':'sample_bias','Stinger Temp':'Stinger',"Diode 1 Temp":'D1',"Diode 2 Temp":'D2'}
     for attr_name in manuipulator_name_dict:
         attrs[attr_name] = nexusobj['entry']['instrument']['manipulator'][manuipulator_name_dict[attr_name]].nxvalue
     
