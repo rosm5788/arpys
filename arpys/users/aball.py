@@ -8,6 +8,24 @@ plt.rcParams['figure.dpi'] = 150
 plt.rcParams['image.cmap'] = 'inferno'
 import os
 
+def fit_gold_edge(gold_edge:xr.DataArray,p0=None):
+    """
+    :param gold_edge: xarray where one of the dimensions is energy, this function will sum over the rest
+    :param p0: Initial guess for scipy curve fit: [ef,T,m,b,y0] for (m*(e-ef)+b)/(e^(e-ef/kbT) + 1) + y0
+    """
+    def fermi_func(e,ef,T,m,b,y0):
+        kb = 8.617e-5
+        return (m*(e-ef)+b)/(np.exp((e - ef) / (kb*T)) + 1) + y0
+    gold_edge = gold_edge.sum(dim=(set(gold_edge.dims) - {'energy'}))
+    gold_edge.plot(color='k')
+    if p0 is None:
+        p0 = [gold_edge.arpes.guess_ef(),50,(gold_edge[1]-gold_edge[0])/(gold_edge.energy[1]-gold_edge.energy[0]),gold_edge.max(),gold_edge.min()]
+    params,covmatrix = curve_fit(fermi_func,gold_edge.energy,gold_edge.values,p0=p0)
+    plt.plot(gold_edge.energy,fermi_func(gold_edge.energy,*params))
+    plt.xlabel("Kinetic Energy (eV)")
+    print(f"Ef = {params[0]:.3f} +- {covmatrix[0,0]**0.5:.3f} eV\nT = {params[1]:.1f} +- {covmatrix[1,1]**0.5:.1f} K")
+    return params,np.sqrt(np.diag(covmatrix))
+
 def parabola_arpes_fit(cut:xr.DataArray,kmin,kmax,emin,emax,p0,inner_exclude=0.0,energy_res=None,plot_results=False,exclude_side=None,do_edcs=False,edc_emin=-0.6,edc_kmin=None,edc_kmax=None,return_edcs=False,return_measurables=False):
     """
     :param p0: Parabola fit intitial guess: [x0,y0,a]
