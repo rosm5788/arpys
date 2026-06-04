@@ -329,21 +329,33 @@ def read_maestro_fits_attrs(fits_object):
 
 def load_maestro_h5_attrs(h5_object): # Reads attributes from .h5 files
     attrs = {}
-    attrs['Pre-Comment'] = h5_object['Comments']['PreScan'][:][0][0].decode("ascii")
+    try:
+        attrs['Pre-Comment'] = h5_object['Comments']['PreScan'][:][0][0].decode("ascii")
+    except KeyError:
+        attrs['Pre-Comment'] = None
     try: # Check if there's a postscan comment
         attrs['Post-Comment'] = h5_object["Comments"]["PostScan"][:][0][0].decode("ascii")
-    except:
+    except KeyError:
         attrs['Post-Comment'] = None
-    attrs['Start Time'] = h5_object['Comments']['PreScan'][:][0][2].decode("ascii")
+    attrs['Start Time'] = h5_object['Headers']['Main'][:][5][2].decode("ascii").replace("'","")
     attrs['Photon Energy'] = float(h5_object['Headers']['Beamline'][:][0][2])
     try: # Swept and Fixed modes have different headers
         attrs['Lens Mode'] = h5_object['Headers']['DAQ_Swept'][:][9][2].decode('ascii').replace("'","")
         attrs['Analyzer Slit'] = h5_object['Headers']['DAQ_Swept'][:][7][2].decode('ascii').replace("'","")
         attrs['Pass Energy'] = int(h5_object['Headers']['DAQ_Swept'][:][10][2])
+        attrs['Swept Min Energy'] = float(h5_object['Headers']['DAQ_Swept'][:][13][2])
+        attrs['Swept Max Energy'] = float(h5_object['Headers']['DAQ_Swept'][:][14][2])
+        attrs['Analyzer Energy Res'] = float(h5_object['Headers']['DAQ_Swept'][:][11][2])
     except:
         attrs['Lens Mode'] = h5_object['Headers']['DAQ_Fixed'][:][9][2].decode('ascii').replace("'","")
         attrs['Analyzer Slit'] = h5_object['Headers']['DAQ_Fixed'][:][7][2].decode('ascii').replace("'","")
         attrs['Pass Energy'] = int(h5_object['Headers']['DAQ_Fixed'][:][10][2])
+        attrs['Fixed Energy'] = float(h5_object['Headers']['DAQ_Fixed'][:][12][2])
+        try: # Fixed mode doesn't output energy res for some reason
+            analyzer_slit_size = float(attrs['Analyzer Slit'][4:7]) # Grabs the number from the string
+        except:
+            analyzer_slit_size = np.nan # In case there's an edge case I don't know about
+        attrs['Analyzer Energy Res'] = analyzer_slit_size/400 * attrs['Pass Energy'] # Formula for R4000 taken from https://www.helmholtz-berlin.de/pubbin/igama_output?modus=datei&did=147
     
     attrs['EPU Polarization'] = float(h5_object['Headers']['Beamline'][:][3][2])
     attrs['Exit Slit Vertical'] = float(h5_object['Headers']['Beamline'][:][44][2])
@@ -351,11 +363,6 @@ def load_maestro_h5_attrs(h5_object): # Reads attributes from .h5 files
     attrs['EPU Harmonic'] = float(h5_object['Headers']['Beamline'][:][82][2])
     attrs['EPU Grating'] = h5_object['Headers']['Beamline'][:][81][3].decode('ascii')
     attrs['Beam Energy Res'] = float(h5_object['Headers']['Beamline'][:][15][2])
-    try:
-        analyzer_slit_size = float(attrs['Analyzer Slit'][4:7]) # Grabs the number from the string
-    except:
-        analyzer_slit_size = np.nan # In case there's an edge case I don't know about
-    attrs['Analyzer Energy Res'] = analyzer_slit_size/400 * attrs['Pass Energy'] # Formula for R4000 taken from https://www.helmholtz-berlin.de/pubbin/igama_output?modus=datei&did=147
     attrs['Total Energy Res'] = np.sqrt(attrs['Beam Energy Res']**2 + attrs['Analyzer Energy Res']**2)
 
     for i in range(7):
@@ -374,12 +381,15 @@ def print_maestro_logbook(folder): # Goes through a folder, gets all the .h5 fil
         raise OSError("No .h5 files found in that folder")
     for file in h5_files:
         with h5py.File(folder+"\\"+file,"r") as scan:
-            data = scan["Comments"]["PreScan"]
             print("---------------------------------------")
-            print(file,"taken at",data[:][0][2].decode("ascii"))
-            print(data[:][0][0].decode("ascii"))
+            try:
+                data = scan["Comments"]["PreScan"]
+                print(file,"taken at",data[:][0][2].decode("ascii"))
+                print(data[:][0][0].decode("ascii"))
+            except KeyError:
+                print(file,"taken at",scan['Headers']['Main'][:][5][2].decode("ascii").replace("'",""))
             try: 
                 data2 = scan["Comments"]["PostScan"]
                 print(data2[:][0][0].decode("ascii"))
-            except:
-                continue
+            except KeyError:
+                pass
