@@ -340,23 +340,31 @@ def load_maestro_h5_attrs(h5_object): # Reads attributes from .h5 files
     attrs['Start Time'] = h5_object['Headers']['Main'][:][5][2].decode("ascii").replace("'","")
     attrs['Photon Energy'] = float(h5_object['Headers']['Beamline'][:][0][2])
     try: # Swept and Fixed modes have different headers
-        attrs['Lens Mode'] = h5_object['Headers']['DAQ_Swept'][:][9][2].decode('ascii').replace("'","")
-        attrs['Analyzer Slit'] = h5_object['Headers']['DAQ_Swept'][:][7][2].decode('ascii').replace("'","")
-        attrs['Pass Energy'] = int(h5_object['Headers']['DAQ_Swept'][:][10][2])
-        attrs['Swept Min Energy'] = float(h5_object['Headers']['DAQ_Swept'][:][13][2])
-        attrs['Swept Max Energy'] = float(h5_object['Headers']['DAQ_Swept'][:][14][2])
-        attrs['Analyzer Energy Res'] = float(h5_object['Headers']['DAQ_Swept'][:][11][2])
-    except:
+        scan_attrs = h5_object['Headers']['DAQ_Swept'][:] # They added a few attributes between beamtimes so I couldn't go by index
+        scan_attrs_dict = {scan_attrs[i][0].decode('ascii'):scan_attrs[i][2] for i in range(len(scan_attrs))}
+        print(scan_attrs_dict)
+        attrs['Lens Mode'] = scan_attrs_dict['SSlnm0'].decode('ascii').replace("'","")
+        attrs['Analyzer Slit'] = scan_attrs_dict['SS_ESlitN'].decode('ascii').replace("'","")
+        attrs['Pass Energy'] = int(scan_attrs_dict['SSpe_0'])
+        attrs['Swept Min Energy'] = float(scan_attrs_dict['SSe0_0'])
+        attrs['Swept Max Energy'] = float(scan_attrs_dict['SSe1_0'])
+        try:
+            attrs['Analyzer Energy Res'] = float(scan_attrs_dict['SSer_0'])
+        except KeyError:
+            pass
+    except KeyError:
         attrs['Lens Mode'] = h5_object['Headers']['DAQ_Fixed'][:][9][2].decode('ascii').replace("'","")
         attrs['Analyzer Slit'] = h5_object['Headers']['DAQ_Fixed'][:][7][2].decode('ascii').replace("'","")
         attrs['Pass Energy'] = int(h5_object['Headers']['DAQ_Fixed'][:][10][2])
         attrs['Fixed Energy'] = float(h5_object['Headers']['DAQ_Fixed'][:][12][2])
+    
+    if 'Analyzer Energy Res' not in attrs:
         try: # Fixed mode doesn't output energy res for some reason
             analyzer_slit_size = float(attrs['Analyzer Slit'][4:7]) # Grabs the number from the string
         except:
             analyzer_slit_size = np.nan # In case there's an edge case I don't know about
         attrs['Analyzer Energy Res'] = analyzer_slit_size/400 * attrs['Pass Energy'] # Formula for R4000 taken from https://www.helmholtz-berlin.de/pubbin/igama_output?modus=datei&did=147
-    
+
     attrs['EPU Polarization'] = float(h5_object['Headers']['Beamline'][:][3][2])
     attrs['Exit Slit Vertical'] = float(h5_object['Headers']['Beamline'][:][44][2])
     attrs['Exit Slit Horizontal'] = float(h5_object['Headers']['Beamline'][:][46][2])
