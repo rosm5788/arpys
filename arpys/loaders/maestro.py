@@ -343,7 +343,7 @@ def load_maestro_h5_attrs(h5_object): # Reads attributes from .h5 files
         scan_attrs = h5_object['Headers']['DAQ_Swept'][:] # They added a few attributes between beamtimes so I couldn't go by index
         scan_attrs_dict = {scan_attrs[i][0].decode('ascii'):scan_attrs[i][2] for i in range(len(scan_attrs))}
         attrs['Lens Mode'] = scan_attrs_dict['SSlnm0'].decode('ascii').replace("'","")
-        attrs['Analyzer Slit'] = (scan_attrs_dict['SS_ESlitN'] if 'SS_ESlitN' in scan_attrs_dict else scan_attrs_dict['SS_ESliN']).decode('ascii').replace("'","")
+        attrs['Analyzer Slit'] = (scan_attrs_dict['SS_ESlitN'] if 'SS_ESlitN' in scan_attrs_dict else scan_attrs_dict['SS_ESliN']).decode('ascii').replace("'","") # Why would they change this?
         attrs['Pass Energy'] = int(scan_attrs_dict['SSpe_0'])
         attrs['Swept Min Energy'] = float(scan_attrs_dict['SSe0_0'])
         attrs['Swept Max Energy'] = float(scan_attrs_dict['SSe1_0'])

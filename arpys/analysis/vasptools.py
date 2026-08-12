@@ -103,11 +103,26 @@ class Parser():
         kx_points = np.unique(kpoints[:,0])
         ky_points = np.unique(kpoints[:,1])
         kz_points = np.unique(kpoints[:,2])
+        if not hasattr(self, 'atom_projections'):
+            raise NotImplementedError("This parser does not extract atom projections.")
         projections = {}
         for atom in self.atom_types:
             projections[atom] = xr.DataArray(np.zeros((len(kx_points),len(ky_points),len(kz_points),self.nbands,len(self.atom_projections[atom]))),coords=[kx_points,ky_points,kz_points,range(1,self.nbands+1),self.lm_labels[0:len(self.atom_projections[atom])]],dims=["kx","ky","kz","band","orbital"])
             for i in range(self.nkpoints):
                 projections[atom].loc[kpoints[i,0],kpoints[i,1],kpoints[i,2]] = self.atom_projections[atom][:,i].T/self.spins[0,i,np.newaxis].T
+        return projections
+    
+    def get_site_projections_xarray(self,cartesian = True):
+        if cartesian: kpoints = self.kpoints_cartesian
+        else: kpoints = self.kpoints_reciprocal
+        kx_points = np.unique(kpoints[:,0])
+        ky_points = np.unique(kpoints[:,1])
+        kz_points = np.unique(kpoints[:,2])
+        if not hasattr(self, 'sites'):
+            raise NotImplementedError("This parser does not extract site projections")
+        projections = xr.DataArray(np.zeros((len(kx_points),len(ky_points),len(kz_points),self.nbands,len(self.sites))),coords=[kx_points,ky_points,kz_points,range(1,self.nbands+1),range(len(self.sites))],dims=["kx","ky","kz","band","site"])
+        for i in range(self.nkpoints):
+            projections.loc[kpoints[i,0],kpoints[i,1],kpoints[i,2]] = self.sites[:,i].T/self.spins[0,i,np.newaxis].T
         return projections
 
 class EIGENVAL_Parser(Parser):
@@ -223,6 +238,7 @@ class vaspouth5_Parser(Parser):
         self.k_reciprocal_to_cartesian(rotation)
         self.rotation = rotation
         self.band_plot = self.parse_bandplotinfo()
+        self.subtract_ef()
         self.initialzed = True
         
     def parse(self):
@@ -248,13 +264,18 @@ class vaspouth5_Parser(Parser):
         self.atom_types = [atom_type.decode().split('_')[0] for atom_type in self.file['input']['poscar']['ion_types'][:]]
         self.atom_num = self.file['input']['poscar']['number_ion_types'][:]
         orbitals = self.file['results']['projectors']['par'][0]
+        projected_dos = self.file['results']['electron_dos']['dospar'][0]
         self.sites = np.sum(orbitals,axis=1)
         self.atom_projections = {}
+        self.dos_projected = {}
         for i in range(len(self.atom_types)):
-            if self.atom_types[i] in self.atom_projections: # This is so that if your poscar is not in order, it won't mess up
+            if self.atom_types[i] in self.atom_projections: # This sees if it's already made a dict entry for an atom and if so, adds to that rather than making a new one
                 self.atom_projections[self.atom_types[i]] += np.sum(orbitals[np.sum(self.atom_num[0:i]):np.sum(self.atom_num[0:i+1])],axis=0)
+                self.dos_projected[self.atom_types[i]] += np.sum(projected_dos[np.sum(self.atom_num[0:i]):np.sum(self.atom_num[0:i+1])],axis=0)
             else:
                 self.atom_projections[self.atom_types[i]] = np.sum(orbitals[np.sum(self.atom_num[0:i]):np.sum(self.atom_num[0:i+1])],axis=0)
+                self.dos_projected[self.atom_types[i]] = np.sum(projected_dos[np.sum(self.atom_num[0:i]):np.sum(self.atom_num[0:i+1])],axis=0)
+
         self.lm_labels = [lm_label.decode().strip() for lm_label in self.file['results']['projectors']['lchar'][:]]
         
         material_name = ""
@@ -271,6 +292,16 @@ class vaspouth5_Parser(Parser):
         self.dos_energies -= self.e_fermi
         self.subtracted = True
         return self.e_fermi
+    
+    def change_ef(self,new_ef:float):
+        if not self.subtracted:
+            self.subtract_ef()
+        print(f"Changing Ef from {self.e_fermi:.4f} eV to {new_ef:.4f} eV")
+        self.band_energies += self.e_fermi
+        self.dos_energies += self.e_fermi
+        self.e_fermi = new_ef
+        self.band_energies -= self.e_fermi
+        self.dos_energies -= self.e_fermi
 
     def parse_bandplotinfo(self):
         if self.file['input']['kpoints']['mode'][()].decode() != 'l': # If it's not in line mode, no reason to get band stuff
@@ -441,7 +472,7 @@ class vaspouth5_Parser(Parser):
         ax.set_xticks(tick_locs)
         ax.set_xticklabels(self.kpoint_labels)
         for tick in tick_locs:
-            ax.axvline(x=tick,color="k",linestyle='dashed')
+            ax.axvline(x=tick,color="k")
         if k_range is not None: # Truncates the plot to the index of k labels that are asked for
             ax.set_xlim((tick_locs[k_range[0]],tick_locs[k_range[1]]))
         return fig, ax
@@ -462,6 +493,36 @@ class vaspouth5_Parser(Parser):
             ax.set_xlim(E_range)
         ax.set_xlabel("Binding Energy (eV)")
         return fig, ax
+    
+    def get_orbital_filling(self,atom:str,orbital:str,ef_shift:float=0):
+        if atom not in self.atom_types:
+            raise KeyError("The atom you asked for isn't in this material")
+        
+        if orbital == "s":
+            data = self.dos_projected[atom][0]
+        elif orbital == "p":
+            data = np.sum(self.dos_projected[atom][1:4],axis=0)
+        elif orbital == "d":
+            data = np.sum(self.dos_projected[atom][4:9],axis=0)
+        elif orbital == "f":
+            data = np.sum(self.dos_projected[atom][9:16],axis=0)
+        elif orbital == "total" or orbital is None:
+            data = np.sum(self.dos_projected[atom],axis=0)
+        elif orbital not in self.lm_labels:
+            raise KeyError("That orbital name isn't in VASP")
+        else:
+            data = self.dos_projected[atom][self.lm_labels.index(orbital)]
+        
+        total_filling = np.trapz(data,self.dos_energies) # Because of the way VASP calculates orbital projections, this is what I normalize to
+        ef_index = np.argmax(self.dos_energies > ef_shift)
+        real_filling = np.trapz(data[:ef_index],self.dos_energies[:ef_index])
+        if orbital in self.lm_labels:
+            num_states = 2
+        else:
+            num_states = {'s':2,'p':6,'d':10,'f':14}[orbital]
+        filling = real_filling/total_filling * num_states
+        print(f"The filling state for the {atom} {orbital} orbital is: {filling:.3f}")
+        return filling
 
     def plot_along_kaxis(self,axis:int,spin=None,color = None,pltfigax=None,**plotargs):
         zero_axes = [1,2,3] # If I'm plotting along a certain axis, that's the one axis that won't have all its values be 0
@@ -505,10 +566,10 @@ class vaspouth5_Parser(Parser):
                 ax.plot(kpoints,bands[:,i],color=color,**plotargs)
         return fig, ax
 
-    def plot_over_arpes(self,spectrum:xr.DataArray,path:list,symmetrize:bool=False,color:str=None,ef_shift:float=0,k_center:float=0,mass_enhancement:float=1,proj_atom=None,proj_orbital=None,add_toplabels:bool=True,add_colorbar:bool=True,pltfigax=None,arpes_kwargs:dict=None,**dft_kwargs):
+    def plot_over_arpes(self,path:list,spectrum:xr.DataArray=None,symmetrize:bool=False,mass_enhancement:float=1,ef_shift:float=0,k_center:float=0,bands_to_plot:int=None,color:str=None,proj_atom=None,proj_orbital=None,add_toplabels:bool=True,add_colorbar:bool=True,return_data=False,pltfigax=None,arpes_kwargs:dict=None,**dft_kwargs):
         """ Plots DFT over an ARPES spectrum 
-        :param spectrum: ARPES spectrum you want to plot the DFT over (pass None if you just want to plot the DFT)
         :param path: Tuple or list indicating the path you want where the first element is the center of the spectrum like ["X","M"] or [3,4] if you want to go by index
+        :param spectrum: ARPES spectrum you want to plot the DFT over (pass None if you just want to plot the DFT)
         :param symmetrize: Whether you want to reflect the DFT about the center
         :param color: Color of the plotted bands. If you do orbital projection, you can put in either a color (which will be used in a transparent to opaque color map) or a matplotlib cmap
         :param ef_shift: Shift of the bands in energy (positive moves higher wrt ARPES)
@@ -517,6 +578,7 @@ class vaspouth5_Parser(Parser):
         :param proj_atom: Atom to do orbital projection onto
         :param proj_orbital: Orbital to project onto, can be s,p,d,f or specific orbital names. None or 'total' will do overall atom projection
         :param add_toplabels: Whether you want k point labels on the top of the plot
+        :param return_data: Just return the band's E(k) data along the selected cut
         :param pltfigax: Tuple of matplotlib fig and ax you want to plot on like (fig,ax)
         :param arpes_kwargs: Dict of parameters to pass to the ARPES plot call
         :param dft_kwargs: Excess parameters are passed to the DFT bands plot call (like vmin,vmax for the colorbar)
@@ -525,15 +587,6 @@ class vaspouth5_Parser(Parser):
             raise NotImplementedError("This VASP file isn't in line mode, this function ain't built for this")
         if not self.subtracted:
             self.subtract_ef()
-        
-        if pltfigax is None:
-            fig, ax = plt.subplots()
-        else: fig, ax = pltfigax
-
-        if spectrum is not None:
-            default_arpes_kwargs = {'robust':True,'add_colorbar':False,'cmap':'inferno','vmin':0}
-            arpes_kwargs = default_arpes_kwargs | (arpes_kwargs or {}) # Gemini was spitting bars with this line
-            spectrum.plot(ax=ax,**arpes_kwargs,zorder=0)
 
         if not (isinstance(path,list) or isinstance(path,tuple)):
             raise ValueError("path should be a tuple or list of two elements that are either strings or ints indicating which path you want to look along")
@@ -555,7 +608,7 @@ class vaspouth5_Parser(Parser):
                     break
             if fail:
                 raise ValueError(f"Sorry, I couldn't find the path you asked for in the VASP file. Here's the KPOINT labels I was working with: {self.kpoint_labels}")
-        if isinstance(path[0],int): # If the path is specified by kpoint index
+        elif isinstance(path[0],int): # If the path is specified by kpoint index
             if path[1] > path[0]:
                 starting_kpoint_index = path[0]*self.kpoints_per_line
                 ending_kpoint_index = path[1]*self.kpoints_per_line - 1
@@ -572,13 +625,12 @@ class vaspouth5_Parser(Parser):
         if symmetrize:
             band_data = np.vstack([band_data[-1:0:-1,:],band_data])
             kpoint_norms = np.append(-kpoint_norms[-1:0:-1],kpoint_norms)
-            if add_toplabels:
-                secax = ax.secondary_xaxis('top')
-                secax.set_ticks([k_center+kpoint_norms[0],k_center,k_center+kpoint_norms[-1]],[path[1],path[0],path[1]])
-        elif add_toplabels:
-            secax = ax.secondary_xaxis('top')
-            secax.set_ticks([k_center,k_center+kpoint_norms[-1]],[path[0],path[1]])
 
+        if return_data:
+            if mass_enhancement != 1 or ef_shift != 0:
+                print(f"Here's the data with mass enhancement {mass_enhancement} and ef shift {ef_shift}")
+            return kpoint_norms,1/mass_enhancement*(band_data+ef_shift)
+        
         proj_data = None
         if proj_atom is not None:
             if proj_orbital == "s":
@@ -602,17 +654,45 @@ class vaspouth5_Parser(Parser):
         elif proj_orbital is not None:
             raise ValueError("Make sure to specifiy an atom to project onto")
 
+        # Plotting section starts here -----------------------------
+        if pltfigax is None:
+            fig, ax = plt.subplots()
+        else: fig, ax = pltfigax
+
+        if spectrum is not None: # Plots the ARPES
+            default_arpes_kwargs = {'robust':True,'add_colorbar':False,'cmap':'inferno','vmin':0}
+            arpes_kwargs = default_arpes_kwargs | (arpes_kwargs or {}) # Gemini was spitting bars with this line
+            spectrum.plot(ax=ax,**arpes_kwargs,zorder=0)
+
+        if symmetrize and add_toplabels:
+            secax = ax.secondary_xaxis('top')
+            secax.set_ticks([k_center+kpoint_norms[0],k_center,k_center+kpoint_norms[-1]],[path[1],path[0],path[1]])
+        elif add_toplabels:
+            secax = ax.secondary_xaxis('top')
+            secax.set_ticks([k_center,k_center+kpoint_norms[-1]],[path[0],path[1]])
+
         default_dft_kwargs = {'color':'k'}
+        if proj_data is not None:
+            default_dft_kwargs['vmax'] = 1
+            default_dft_kwargs['vmin'] = 0
         dft_kwargs = default_dft_kwargs | (dft_kwargs or {})
         if color is None:
             color=dft_kwargs.pop('color')
         else:
             dft_kwargs.pop('color')
-        if proj_data is None:
-            for i in range(self.nbands):
-                ax.plot(kpoint_norms+k_center,1/mass_enhancement*band_data[:,i]+ef_shift,color=color,**dft_kwargs)
+
+        if bands_to_plot is not None:
+            if isinstance(bands_to_plot,int):
+                bands_to_plot = [bands_to_plot]
+            else:
+                bands_to_plot = list(bands_to_plot)
         else:
-            for i in range(self.nbands):
+            bands_to_plot = range(self.nbands)
+        if proj_data is None:
+            for i in bands_to_plot:
+                ax.plot(kpoint_norms+k_center,1/mass_enhancement*(band_data[:,i]+ef_shift),color=color,**dft_kwargs)
+        else:
+            for i in bands_to_plot:
                 if mcolors.is_color_like(color):
                     cmap = mcolors.LinearSegmentedColormap.from_list('trans_cmap',[mcolors.to_rgba(color,0),mcolors.to_rgba(color,1)],N=100)
                 else: cmap = color
@@ -624,6 +704,15 @@ class vaspouth5_Parser(Parser):
         ax.set_xlabel('$\\rm k_x~(\\AA^{-1}$)')
         ax.set_ylabel('$\\rm E - E_F~(eV)$')
         return fig,ax
+
+    def extract_band_data(self,path:list,band:int,symmetrize=True,E_range=None):
+        """Wraps plot_over_arpes to return the data for one band in one array and allows energy range masking"""
+        kpoints, bands_data = self.plot_over_arpes(path,symmetrize=symmetrize,return_data=True)
+        data = np.column_stack((kpoints,bands_data[:,band]))
+        if E_range:
+            mask = (data[:, 1] > E_range[0]) & (data[:, 1] < E_range[1])
+            data = data[mask]
+        return data
     
 
 def KPOINTS_Printer_zplane(kmax,Ngrid,kz_list=0,title="Fermi Grid KPOINTS"): # Will only made grids with odd numbers so gamma is included
@@ -705,17 +794,18 @@ def KPOINTS_Printer_xplane(kmax,Ngrid,kx_list=0,title="Fermi Grid KPOINTS"): # R
                     print(f"{xval} {yval} {zval} 1")
 
 
-def KPOINTS_Printer_plane(kmax,Ngrid,plane_vector=(0,0,1),kperp_list=0,title="Fermi Grid KPOINTS",filepath:str=None):
+def KPOINTS_Printer_plane(kmax,Ngrid,plane_vector=(0,0,1),kperp_list=0,shift:np.ndarray=None,title="Fermi Grid KPOINTS",filepath:str=None):
     if Ngrid % 2 == 0:
         raise NotImplementedError("I am a dumb KPOINTS Generator and can only do odd sized grids")
     if type(kperp_list) is float or type(kperp_list) is int:
-        kperp_array = np.array([kperp_list])/(2*np.pi)
-    else: kperp_array = np.array(kperp_list)/(2*np.pi)
+        kperp_array = np.array([kperp_list])
+    else: kperp_array = np.array(kperp_list)
     nkpoints = Ngrid**2 * len(kperp_array)
     # First, I get all of the points in the planes perp to (001)
-    kparallel_vals = np.linspace(-kmax/(2*np.pi),kmax/(2*np.pi),Ngrid,endpoint=True)
+    kparallel_vals = np.linspace(-kmax,kmax,Ngrid,endpoint=True)
     k1,k2,k3 = np.meshgrid(kparallel_vals,kparallel_vals,kperp_array)
     kpoints = np.stack([k1,k2,k3],axis=-1).reshape(nkpoints,3)
+    
     # Now, I take all of the points oriented around (001) then rotate to whatever unit vector is provided
     if not all([plane_vector[i] == (0,0,1)[i] for i in range(3)]): # If the points are already perp to (0,0,1), no need to rotate
         # Getting theta and phi of the unit vector then doing R_y(theta).R_z(phi) on each point
@@ -727,6 +817,10 @@ def KPOINTS_Printer_plane(kmax,Ngrid,plane_vector=(0,0,1),kperp_list=0,title="Fe
         for i in range(len(kpoints)):
             kpoints[i] = rot_matrix @ kpoints[i]
         kpoints = np.round(kpoints,10)
+    if shift is not None:
+        kpoints += shift
+    print(kpoints)
+    kpoints = kpoints / (2*np.pi) # For some dumbass reason, VASP scales everything up by 2pi
     # Now to actually print the KPOINTS file to the designated filepath:
     if filepath is not None:
         if os.path.isdir(filepath):
@@ -763,13 +857,19 @@ class Fermi2D_Plotter():
         elif isinstance(parser,str):
             parser_dict = {'vasph5':vaspouth5_Parser,'vaspouth5':vaspouth5_Parser,'EIGENVAL':EIGENVAL_Parser,'eigenval':EIGENVAL_Parser,'vasptxt':EIGENVAL_Parser}
             self.parser = parser_dict[parser](directory,Ef=Ef,rotation=z_axis)
-            self.ef = self.parser.subtract_ef()
+            if not self.parser.subtracted:
+                self.parser.subtract_ef()
+            self.ef = self.parser.e_fermi
         elif not parser.initialzed:
             self.parser = parser(directory,Ef=Ef,rotation=z_axis)
-            self.ef = self.parser.subtract_ef()
+            if not self.parser.subtracted:
+                self.parser.subtract_ef()
+            self.ef = self.parser.e_fermi
         else: # This is here in case you've already initialized the parser, this probably isn't needed but whatever
             self.parser = parser
-            self.ef = self.parser.subtract_ef()
+            if not self.parser.subtracted:
+                self.parser.subtract_ef()
+            self.ef = self.parser.e_fermi
 
     def __getattr__(self, name):
         # Grabs the different xarrays only when the plotter needs it to save a little time
@@ -993,7 +1093,7 @@ class Fermi2D_Plotter():
         fig.suptitle(f"Atomic Orbital Projection Breakdown for {atom} at $k_{k_plane} = {k_perp}$ and $E-E_f = {fermi} eV$",y=0.925)
         return fig,axs
     
-    def plot_bands_along_kaxis(self,axis='z',interp=5,spin=None,pltfigax=None):
+    def plot_bands_along_kaxis(self,axis='z',interp=5,spin=None,pltfigax=None,k1_offset=0,k2_offset=0,bands_to_plot=None):
         if axis in ['x','kx',1]:
             k1,k2,k3 = 'ky','kz','kx'
         elif axis in ['y','ky',2]:
@@ -1002,7 +1102,7 @@ class Fermi2D_Plotter():
             k1,k2,k3 = 'kx','ky','kz'
         else:
             raise ValueError("axis should be the k axis you want to plot along like 'kx','ky','kz'")
-        band_data = self.interpolate_xarray(self.energy.sel({k1:0,k2:0},method='nearest'),interp)
+        band_data = self.interpolate_xarray(self.energy.sel({k1:k1_offset,k2:k2_offset},method='nearest'),interp)
         
         if spin is not None:
             if spin in ['x','sx',1]:
@@ -1013,16 +1113,18 @@ class Fermi2D_Plotter():
                 spin = 'sz'
             else:
                 raise ValueError("spin should be the spin component you want to plot along like 'sx','sy','sz'")
-            spins = self.interpolate_xarray(getattr(self,spin).sel({k1:0,k2:0},method='nearest'),interp)
+            spins = self.interpolate_xarray(getattr(self,spin).sel({k1:k1_offset,k2:k2_offset},method='nearest'),interp)
         
         if pltfigax is None:
             fig, ax = plt.subplots()
         else: fig, ax = pltfigax
+        if bands_to_plot is None:
+            bands_to_plot = range(1,self.parser.nbands+1)
         if spin is None:
-            for i in range(1,self.parser.nbands+1):
+            for i in bands_to_plot:
                 band_data.sel(band=i).plot(color='k',ax=ax)
         else:
-            for i in range(1,self.parser.nbands+1):
+            for i in bands_to_plot:
                 lines = colored_line(band_data[k3].values,band_data.sel(band=i).values,spins.sel(band=i).values,ax=ax,vmin=-1,vmax=1,cmap='seismic')
             cbar = fig.colorbar(lines)
             cbar.set_label(f"$S_{spin[1]}$ $(+ = \\uparrow)$")
@@ -1058,28 +1160,26 @@ class Fermi2D_Plotter():
         delta_m = np.sqrt(cov_matrix[0,0]) * (hbar**2/(2*(mass_parameters[0])**2))*(1e20) * c**2
         print(f"Estimated Band Mass: {m/511e3:3f} ± {delta_m/511e3:3e} m_e")
         return m/511e3,mass_parameters[1],mass_parameters[2]
-        
 
-if __name__ == "__main__":
-    directory = r"C:\Users\ajbal\OneDrive - UCB-O365\Dessau Research\VASP Data\TaAs\bands"
+#Examples:
+''' directory = r"C:\Users\ajbal\OneDrive - UCB-O365\Dessau Research\VASP Data\TaAs\bands"
     plotter = Fermi2D_Plotter(directory)
     # Example for plotting sz projection onto the bands at kz=0, E-Ef=-0.2
     fig, ax = plotter.plotFermi2D('z',k_perp=0,fermi=-0.2,spin='z')
     plt.title("2D -0.2 eV Surface and Sz projection at $k_{z}$ = 0")
-    plt.show()
+
     #Example for plotting in plane spin texture of a band as well as that band's 2d fermi surface at E-Ef=-0.5 
     fig, ax = plotter.plotFermi2D('z',k_perp=0,fermi=-0.5,spin='z',fermi_bands=[148],spin_texture=True)
     plt.title("Sx Sy Spin Texture and -0.5 eV Surface at $k_{z}$ = 0 for Band 148")
-    plt.show()
+
     #Example for plotting Cu pz orbital projection onto the fermi surface
     fig, ax = plotter.plotFermi2D('z',k_perp=0,fermi=-0.5,atom="Cu",orbital="pz")
     plt.title("Cu d Projection onto -0.5 eV Surface at $k_{z}$ = 0")
-    plt.show()
+
     #Breakdown by orbital of an atom projection
     fig, axs = plotter.orbital_breakdown(k=0,plane='z',fermi=-0.5,atom="Cu")
-    plt.show()
+    
     # You can also specify a figure and axis for the plot if you want to make your own subplots thing
     fig2,ax2 = plt.subplots()
     fig2, ax2 = plotter.plotFermi2D_kzplane(kz=0,fermi=-0.7,spin='x',pltfigax=(fig2,ax2))
-    plt.title("2D -0.7 eV Surface and Sx projection at $k_{z}$ = 0")
-    plt.show()
+    plt.title("2D -0.7 eV Surface and Sx projection at $k_{z}$ = 0")'''
