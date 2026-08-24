@@ -1161,8 +1161,89 @@ class Fermi2D_Plotter():
         print(f"Estimated Band Mass: {m/511e3:3f} ± {delta_m/511e3:3e} m_e")
         return m/511e3,mass_parameters[1],mass_parameters[2]
 
+def pymatgen_slab_generator(bulk_structure, output_prefix="./slabs_output", miller_index=(0,0,1), min_slab_size=10,
+                             vacuum_size=20, selective_dynamics=None,slab_choice=None,symmetrize=False, layer_tol=0.1):
+    try:
+        from pymatgen.core.surface import SlabGenerator
+        from pymatgen.core import Structure
+        from pymatgen.io.vasp import Poscar
+        from pathlib import Path
+    except:
+        raise ImportError("This function requires pymatgen and pathlib. Go install them.")
+
+    outdir = Path(output_prefix)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    def cluster_z(z_values, tol):
+        """Group z-coords into layers using a distance tolerance. 
+        Matches pymatgen ftol=0.1 Ang default)."""
+        z_sorted = sorted(z_values)
+        clusters = [[z_sorted[0]]]
+        for z in z_sorted[1:]:
+            if z - clusters[-1][-1] <= tol:
+                clusters[-1].append(z)
+            else:
+                clusters.append([z])
+        return [np.mean(c) for c in clusters], clusters
+
+    # make the slwabs based on input requirements
+    s = Structure.from_file(bulk_structure, sort=True)
+    sg = SlabGenerator(initial_structure=s, miller_index=miller_index,
+                        min_slab_size=min_slab_size, min_vacuum_size=vacuum_size,
+                        center_slab=True)
+    slabs = sg.get_slabs(symmetrize=symmetrize)
+
+    print(f"Found {len(slabs)} possible slabs. You chose slab numbers: {slab_choice}. Applying selective dynamics (if specified) and printing POSCAR.")
+
+    if slab_choice == None:
+        desired_slabs = slabs
+    else:
+        desired_slabs = []
+        for idx in slab_choice:
+            desired_slabs.append(slabs[idx])
+
+    for i, slab in enumerate(desired_slabs):
+        all_z_coords = [site.coords[2] for site in slab]
+        layer_centers, clusters = cluster_z(all_z_coords, layer_tol)
+        n_layers = len(layer_centers)
+        slab_thickness = max(all_z_coords) - min(all_z_coords)
+        vacuum_thickness = slab.lattice.c - slab_thickness
+
+        if vacuum_thickness < 10:
+            print(f"You just made a slab with only {vacuum_thickness:.2f} Ang. of vacuum. I hope you know what you're doing...")
+            print("If you're a noob, try increasing vacuum_size to get at least 20 Ang. of space, otherwise, proceed with caution.")
+
+        print(f"Generated slab {i} with {n_layers} layers, that is {slab_thickness:.3f} Ang. thick")
+        print(f"The vacuum layer is {vacuum_thickness:.2f} Ang. thick")
+        print(f"symmetric (top/bottom surfaces equivalent): {slab.is_symmetric()}")
+
+        if selective_dynamics:
+            num_layers_to_relax = selective_dynamics
+            if n_layers <= (num_layers_to_relax * 2):
+                print("Warning: Slab is thinner than the requested relaxation layers. All atoms will be relaxed.")
+                relax_clusters = clusters
+            else:
+                relax_clusters = clusters[:num_layers_to_relax] + clusters[-num_layers_to_relax:]
+            relax_z_values = set(z for cluster in relax_clusters for z in cluster)
+
+            sel_dyn = []
+            for site in slab:
+                if site.coords[2] in relax_z_values:
+                    sel_dyn.append([True, True, True]) #allow for total 3d relaxation
+                else:
+                    sel_dyn.append([False, False, False]) #freeze the site, not on the surface
+            
+            slab.add_site_property("selective_dynamics", sel_dyn)
+            slab = slab.get_sorted_structure()
+
+            slab.to(filename=outdir / f"POSCAR_slab{i}_sel_{n_layers}layers.poscar", fmt="poscar")
+            print(f"I cast: selective dynamics on the top and bottom {num_layers_to_relax} layers.")
+        else:
+            slab = slab.get_sorted_structure() # sorts by z while keeping species together for ease of 
+            slab.to(filename=outdir / f"POSCAR_slab{i}", fmt="poscar")
+        print("~~~~~~~~~~~~~~~~~ Done with this slab ~~~~~~~~~~~~~~~")
 #Examples:
-''' directory = r"C:\Users\ajbal\OneDrive - UCB-O365\Dessau Research\VASP Data\TaAs\bands"
+r''' directory = r"C:\Users\ajbal\OneDrive - UCB-O365\Dessau Research\VASP Data\TaAs\bands"
     plotter = Fermi2D_Plotter(directory)
     # Example for plotting sz projection onto the bands at kz=0, E-Ef=-0.2
     fig, ax = plotter.plotFermi2D('z',k_perp=0,fermi=-0.2,spin='z')
