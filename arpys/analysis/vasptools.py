@@ -145,9 +145,9 @@ class EIGENVAL_Parser(Parser):
         self.initalized = True
 
     def parse(self):
-        if not os.path.exists(self.directory+"\\EIGENVAL"): 
+        if not os.path.exists(self.directory+os.sep+"EIGENVAL"): 
             raise OSError("Can't find the EIGENVAL file in that directory")
-        with open(self.directory+"\\EIGENVAL", "rt") as file:
+        with open(self.directory+os.sep+"EIGENVAL", "rt") as file:
             text = file.readlines()
         self.nkpoints, self.nbands = [int(elem) for elem in text[self.NKPOINTS_LINE].split()[1:3]]
         self.kpoints_reciprocal = np.zeros((self.nkpoints,3))
@@ -171,9 +171,9 @@ class EIGENVAL_Parser(Parser):
             print("The energies have already been subtracted by the Fermi Energy and I'm not doing it again")
             return False
         if self.e_fermi is None:
-            if not os.path.exists(self.directory+"\\OUTCAR"): 
+            if not os.path.exists(self.directory+os.sep+"OUTCAR"): 
                 raise OSError("Can't find an OUTCAR file to get Fermi Energy in EIGENVAL directory (you can specify Ef when initializing the class)")
-            self.e_fermi = self.Outcar(self.directory+"\\OUTCAR").efermi
+            self.e_fermi = self.Outcar(self.directory+os.sep+"OUTCAR").efermi
         print(f"Fermi Energy: {self.e_fermi:.3f} eV")
         self.band_energies -= self.e_fermi
         if hasattr(self,'dos_energies') and self.dos_energies is not None:
@@ -182,7 +182,7 @@ class EIGENVAL_Parser(Parser):
         return self.e_fermi
 
     def k_reciprocal_to_cartesian(self,rotation=None): # By default, the file gives k points in reciprocal lattice so I have this run by default to fix that
-        OUTCAR_path = self.directory + "\\OUTCAR"
+        OUTCAR_path = self.directory + os.sep+"OUTCAR"
         if not os.path.exists(OUTCAR_path): 
             raise OSError("Can't find the OUTCAR file in the directory to get reciprocal lattice")
         reciprocal_vectors = self.Outcar(OUTCAR_path).reciprocal_lattice
@@ -204,9 +204,9 @@ class EIGENVAL_Parser(Parser):
         raise NotImplementedError("EIGENVAL_Parser can't get atom projections")
     
     def parse_DOSCAR(self):
-        if not os.path.exists(self.directory+"\\DOSCAR"): 
+        if not os.path.exists(self.directory+os.sep+"DOSCAR"): 
             raise OSError("Can't find the DOSCAR file in given directory")
-        with open(self.directory+"\\DOSCAR", "rt") as file:
+        with open(self.directory+os.sep+"DOSCAR", "rt") as file:
             text = file.readlines()
         points = int(text[5].split()[2])
         dos = np.zeros((points,2))
@@ -231,7 +231,7 @@ class EIGENVAL_Parser(Parser):
 class vaspouth5_Parser(Parser):
     initialzed = False
     def __init__(self,directory,Ef=None,rotation=None):
-        self.directory = directory
+        self.directory = os.path.expanduser(directory)
         self.e_fermi = Ef
         self.subtracted = False
         self.parse()
@@ -244,9 +244,9 @@ class vaspouth5_Parser(Parser):
     def parse(self):
         if not os.path.exists(self.directory): 
             raise OSError("You gave me a fake directory")
-        if not os.path.exists(self.directory+"\\vaspout.h5"): 
+        if not os.path.exists(self.directory+os.sep+"vaspout.h5"): 
             raise OSError("Can't find the vaspout.h5 file in that directory")
-        self.file = h5py.File(self.directory+"\\vaspout.h5")
+        self.file = h5py.File(self.directory+os.sep+"vaspout.h5")
         self.nkpoints = self.file['results']['electron_eigenvalues']['kpoints'][()]
         self.nbands = self.file['results']['electron_eigenvalues']['nb_tot'][()]
         self.kpoints_reciprocal = self.file['results']['electron_eigenvalues']['kpoint_coords'][:]
@@ -408,7 +408,7 @@ class vaspouth5_Parser(Parser):
                 proj_data = self.atom_projections[proj_atom][self.lm_labels.index(proj_orbital)]
 
             proj_data /= self.spins[0]
-            default_plot_kwargs = {'color':'afmhot_r','vmin':0,'vmax':1,'cbar_title':f"Projection onto {proj_atom} {proj_orbital if not (proj_orbital is None or proj_orbital=='total') else ""} orbital"}
+            default_plot_kwargs = {'color':'afmhot_r','vmin':0,'vmax':1,'cbar_title':f"Projection onto {proj_atom} {proj_orbital if not (proj_orbital is None or proj_orbital=='total') else ''} orbital"}
         elif proj_orbital:
             raise ValueError("I can't plot an orbital unless you tell me what atom we're workign with")
             
@@ -700,7 +700,7 @@ class vaspouth5_Parser(Parser):
                 lines = colored_line(kpoint_norms+k_center,1/mass_enhancement*band_data[:,i] + ef_shift,proj_data[:,i],ax,cmap=cmap,**dft_kwargs)
             if add_colorbar:
                 cbar = fig.colorbar(lines)
-                cbar.set_label(f"Projection onto {proj_atom} {proj_orbital if proj_orbital else ""} orbital")
+                cbar.set_label(f"Projection onto {proj_atom} {proj_orbital if proj_orbital else ''} orbital")
         ax.set_xlabel('$\\rm k_x~(\\AA^{-1}$)')
         ax.set_ylabel('$\\rm E - E_F~(eV)$')
         return fig,ax
@@ -824,8 +824,8 @@ def KPOINTS_Printer_plane(kmax,Ngrid,plane_vector=(0,0,1),kperp_list=0,shift:np.
     # Now to actually print the KPOINTS file to the designated filepath:
     if filepath is not None:
         if os.path.isdir(filepath):
-            if filepath.endswith("\\"):
-                filepath = filepath + "\\KPOINTS"
+            if filepath.endswith(os.sep):
+                filepath = filepath + os.sep + "KPOINTS"
             else: filepath = filepath + "KPOINTS"
         with open(filepath,"w",newline='\n') as file:
             file.write(f"{title}\n{len(kpoints)}\nCartesian\n")
@@ -944,7 +944,7 @@ class Fermi2D_Plotter():
         new_xarray = xarray.interp(new_coords,method='cubic')
         return new_xarray
 
-    def plotFermi2D(self,k_plane:str='kz',k_perp:float=0,fermi:float=0,color="k",interp:int=3,spin=None,fermi_bands:Optional[List[int]]=None,spin_texture=False,st_interp:int=0,atom:str=None,orbital:str=None,proj_cmap=None,pltfigax=None):
+    def plotFermi2D(self,k_plane:str='kz',k_perp:float=0,fermi:float=0,color="k",interp:int=3,spin=None,fermi_bands:Optional[List[int]]=None,spin_texture=False,st_interp:int=0,atom:str=None,orbital:str=None,proj_cmap=None,add_colorbar=True,pltfigax=None):
         """Plots a 2D slice of a Fermi Surface using a regularly spaced xarray with dims 'kx','ky','kz', 'band'
 
         :param k_plane (str): String indicating the k coordinate the fermi surface is perpendicular to, i.e. 'kx' if you want the slice at kx=0. Accepts in the form of 'ky', 'y' or 2
@@ -1013,8 +1013,9 @@ class Fermi2D_Plotter():
                 spin_data.append(spin_data_band)
             for i in range(len(spin_data)):
                 ax.scatter(spin_coords[i][:,0],spin_coords[i][:,1],s=10,c=spin_data[i],cmap='seismic',vmin=-1,vmax=1,zorder=1)
-            cbar = fig.colorbar(cm.ScalarMappable(cmap=cm.seismic,norm=mcolors.Normalize(vmin=-1,vmax=1)),ax=ax)
-            cbar.set_label(f"$S_{spin}$ $(+ = \\uparrow)$")
+            if add_colorbar:
+                cbar = fig.colorbar(cm.ScalarMappable(cmap=cm.seismic,norm=mcolors.Normalize(vmin=-1,vmax=1)),ax=ax)
+                cbar.set_label(f"$S_{spin}$ $(+ = \\uparrow)$")
         if spin_texture and len(fermi_bands) == 1: # Plots vector plot for spin components in plane of the cut
             print(f"Starting in plane spin texture plotting for S{k1[1]} and S{k2[1]} for band {fermi_bands[0]}")
             s1_slice = getattr(self,'s'+k1[1]).sel({'band':fermi_bands[0], k3:k_perp},method='nearest')
@@ -1063,14 +1064,15 @@ class Fermi2D_Plotter():
                 proj_data.append(proj_data_band)
             for i in range(len(proj_data)):
                 ax.scatter(spin_coords[i][:,0],spin_coords[i][:,1],s=10,c=proj_data[i],cmap=proj_cmap,vmin=0,vmax=1,zorder=3)
-            cbar = fig.colorbar(cm.ScalarMappable(cmap=proj_cmap,norm=mcolors.Normalize(vmin=0,vmax=1)),ax=ax)
-            cbar.set_label(f"{atom} {orbital} Orbital Projection")
+            if add_colorbar:
+                cbar = fig.colorbar(cm.ScalarMappable(cmap=proj_cmap,norm=mcolors.Normalize(vmin=0,vmax=1)),ax=ax)
+                cbar.set_label(f"{atom} {orbital} Orbital Projection")
         elif atom is not None and atom not in self.atoms:
             raise KeyError("The requested atom for projection isn't in this material")
         elif atom is not None and spin is not None:
             print("Warning: Can't plot atom projection because spin projection has already been plotted, skipping")
-        ax.set_xlabel(f'$\\rm {'k_'+k1[1]}$ (Å$^{{-1}}$)')
-        ax.set_ylabel(f'$\\rm {'k_'+k2[1]}$ (Å$^{{-1}}$)')
+        ax.set_xlabel(f"$\\rm {'k_'+k1[1]}$ (Å$^{{-1}}$)")
+        ax.set_ylabel(f"$\\rm {'k_'+k2[1]}$ (Å$^{{-1}}$)")
         return fig,ax
     
     def orbital_breakdown(self,k_plane='z',k_perp=0,fermi=0,band_color='k',interp=5,atom=None):
