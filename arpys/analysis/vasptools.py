@@ -566,7 +566,7 @@ class vaspouth5_Parser(Parser):
                 ax.plot(kpoints,bands[:,i],color=color,**plotargs)
         return fig, ax
 
-    def plot_over_arpes(self,path:list,spectrum:xr.DataArray=None,symmetrize:bool=False,mass_enhancement:float=1,ef_shift:float=0,k_center:float=0,bands_to_plot:int=None,color:str=None,proj_atom=None,proj_orbital=None,add_toplabels:bool=True,add_colorbar:bool=True,return_data=False,pltfigax=None,arpes_kwargs:dict=None,**dft_kwargs):
+    def plot_over_arpes(self,path:list,spectrum:xr.DataArray=None,symmetrize:bool=False,mass_enhancement:float=1,ef_shift:float=0,k_center:float=0,bands_to_plot:int=None,color:str=None,spin=None,proj_atom=None,proj_orbital=None,add_toplabels:bool=True,add_colorbar:bool=True,return_data=False,pltfigax=None,arpes_kwargs:dict=None,**dft_kwargs):
         """ Plots DFT over an ARPES spectrum 
         :param path: Tuple or list indicating the path you want where the first element is the center of the spectrum like ["X","M"] or [3,4] if you want to go by index
         :param spectrum: ARPES spectrum you want to plot the DFT over (pass None if you just want to plot the DFT)
@@ -575,6 +575,7 @@ class vaspouth5_Parser(Parser):
         :param ef_shift: Shift of the bands in energy (positive moves higher wrt ARPES)
         :param k_center: k value where the first element of your path is in the ARPES data
         :param mass_enhancement: Scales the DFT by 1/mass_enhancement wrt Ef
+        :param spin: Spin component to project onto, can be 'x','y','z' or 1,2,3
         :param proj_atom: Atom to do orbital projection onto
         :param proj_orbital: Orbital to project onto, can be s,p,d,f or specific orbital names. None or 'total' will do overall atom projection
         :param add_toplabels: Whether you want k point labels on the top of the plot
@@ -653,6 +654,19 @@ class vaspouth5_Parser(Parser):
                 proj_data = np.vstack([proj_data[-1:0:-1,:],proj_data])
         elif proj_orbital is not None:
             raise ValueError("Make sure to specifiy an atom to project onto")
+        elif spin is not None:
+            if spin in ['x','sx',1]:
+                spin = 1
+            elif spin in ['y','sy',2]:
+                spin = 2
+            elif spin in ['z','sz',3]:
+                spin = 3
+            else:
+                raise KeyError("spin should be 'x','y','z' or 1,2,3")
+            proj_data = self.spins[spin]
+            proj_data /= self.spins[0]
+        if proj_atom is not None and spin is not None:
+            print("I can't plot spin and atomic projections so I ignored spin")
 
         # Plotting section starts here -----------------------------
         if pltfigax is None:
@@ -672,9 +686,11 @@ class vaspouth5_Parser(Parser):
             secax.set_ticks([k_center,k_center+kpoint_norms[-1]],[path[0],path[1]])
 
         default_dft_kwargs = {'color':'k'}
-        if proj_data is not None:
+        if proj_data is not None and proj_atom is not None:
             default_dft_kwargs['vmax'] = 1
             default_dft_kwargs['vmin'] = 0
+        elif proj_data is not None and spin is not None:
+            default_dft_kwargs.update({'color':'seismic','vmin':-1,'vmax':1,'cbar_title':f"$S_{['x','y','z'][spin-1]}$ $(\\uparrow = +)$"})
         dft_kwargs = default_dft_kwargs | (dft_kwargs or {})
         if color is None:
             color=dft_kwargs.pop('color')

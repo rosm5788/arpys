@@ -226,7 +226,8 @@ def symmetrize_spectrum(spectrum:xr.DataArray,half_to_use='positive',dim='kx'):
         spectrum_sym = xr.DataArray(spectrum_sym,{dim:axis,list(spectrum.dims)[1]:spectrum.coords[list(spectrum.dims)[1]]},attrs=original_attrs)
     return spectrum_sym.transpose(original_dims[0],original_dims[1],...)
 
-def background_subtraction(spectrum:xr.DataArray,sample_range,dim='kx'):
+def background_subtraction(spectrum:xr.DataArray,sample_range:tuple,dim='kx'):
+    spectrum = spectrum.copy()
     old_coords = list(spectrum.coords.keys())
     spectrum = spectrum.transpose(dim,...)
     background = spectrum.sel({dim:slice(sample_range[0],sample_range[1])}).mean(dim).values
