@@ -444,7 +444,23 @@ class Arpes:
         return alpha, beta, ke,
 
     @requires_ef
-    def map_isoenergy_k_irreg(self, ke=None, be=None, binwidth=1, phi0=0, theta0=0, azimuth=0, slit_orientation=0):
+    def map_isoenergy_k_irreg(self, ke=None, be=None, binwidth=0.02, phi0=0, theta0=0, azimuth=0, slit_orientation=0):
+        """
+        Returns a k-converted 2D spectrum at fixed energy (be or ke) with specified binwidth.
+
+        Parameters
+        ----------
+        ke, be : float
+            Kinetic or binding energy at which you'd like to take a constant-energy contour
+        binwidth: float
+            The width in energy (in eV) used before summing along the energy axis. Binning happens before k-conversion 
+        phi0, theta0, azimuth: float
+            phi0    : tilt offset along slit, 
+            theta0  : perpendicular offset across slit
+            azimuth : rotation w.r.t. the slit aligned with kx
+        slit_orientation : 0=vertical slit, 1=horizontal slit, 2=deflector+vertical slit, 3=deflector+horizontal slit
+            Physical laboratory set-up of the slit orientation, according to the kx-along-slit convention.
+        """
         if ke is None:
             ke = be + self.ef
         iso_e = self._obj.arpes.sel_kinetic(ke - binwidth, ke + binwidth).sum('energy')
