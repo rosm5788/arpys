@@ -650,8 +650,7 @@ class vaspouth5_Parser(Parser):
                 proj_data = self.atom_projections[proj_atom][self.lm_labels.index(proj_orbital)]
             proj_data /= self.spins[0]
             proj_data = proj_data[starting_kpoint_index:ending_kpoint_index+backwards:backwards]
-            if symmetrize:
-                proj_data = np.vstack([proj_data[-1:0:-1,:],proj_data])
+            
         elif proj_orbital is not None:
             raise ValueError("Make sure to specifiy an atom to project onto")
         elif spin is not None:
@@ -668,6 +667,9 @@ class vaspouth5_Parser(Parser):
         if proj_atom is not None and spin is not None:
             print("I can't plot spin and atomic projections so I ignored spin")
 
+        if symmetrize and proj_data is not None:
+            proj_data = np.vstack([proj_data[-1:0:-1,:],proj_data])
+
         # Plotting section starts here -----------------------------
         if pltfigax is None:
             fig, ax = plt.subplots()
@@ -678,19 +680,14 @@ class vaspouth5_Parser(Parser):
             arpes_kwargs = default_arpes_kwargs | (arpes_kwargs or {}) # Gemini was spitting bars with this line
             spectrum.plot(ax=ax,**arpes_kwargs,zorder=0)
 
-        if symmetrize and add_toplabels:
-            secax = ax.secondary_xaxis('top')
-            secax.set_ticks([k_center+kpoint_norms[0],k_center,k_center+kpoint_norms[-1]],[path[1],path[0],path[1]])
-        elif add_toplabels:
-            secax = ax.secondary_xaxis('top')
-            secax.set_ticks([k_center,k_center+kpoint_norms[-1]],[path[0],path[1]])
-
         default_dft_kwargs = {'color':'k'}
         if proj_data is not None and proj_atom is not None:
             default_dft_kwargs['vmax'] = 1
             default_dft_kwargs['vmin'] = 0
+            cbar_title = f"Projection onto {proj_atom} {proj_orbital if proj_orbital else ''} orbital"
         elif proj_data is not None and spin is not None:
-            default_dft_kwargs.update({'color':'seismic','vmin':-1,'vmax':1,'cbar_title':f"$S_{['x','y','z'][spin-1]}$ $(\\uparrow = +)$"})
+            default_dft_kwargs.update({'color':'seismic','vmin':-1,'vmax':1})
+            cbar_title = f"$S_{['x','y','z'][spin-1]}$ $(\\uparrow = +)$"
         dft_kwargs = default_dft_kwargs | (dft_kwargs or {})
         if color is None:
             color=dft_kwargs.pop('color')
@@ -704,6 +701,13 @@ class vaspouth5_Parser(Parser):
                 bands_to_plot = list(bands_to_plot)
         else:
             bands_to_plot = range(self.nbands)
+
+        if symmetrize and add_toplabels:
+            secax = ax.secondary_xaxis('top')
+            secax.set_ticks([k_center+kpoint_norms[0],k_center,k_center+kpoint_norms[-1]],[path[1],path[0],path[1]])
+        elif add_toplabels:
+            secax = ax.secondary_xaxis('top')
+            secax.set_ticks([k_center,k_center+kpoint_norms[-1]],[path[0],path[1]])
         if proj_data is None:
             for i in bands_to_plot:
                 ax.plot(kpoint_norms+k_center,1/mass_enhancement*(band_data[:,i]+ef_shift),color=color,**dft_kwargs)
@@ -716,7 +720,7 @@ class vaspouth5_Parser(Parser):
                 lines = colored_line(kpoint_norms+k_center,1/mass_enhancement*band_data[:,i] + ef_shift,proj_data[:,i],ax,cmap=cmap,**dft_kwargs)
             if add_colorbar:
                 cbar = fig.colorbar(lines)
-                cbar.set_label(f"Projection onto {proj_atom} {proj_orbital if proj_orbital else ''} orbital")
+                cbar.set_label(cbar_title)
         ax.set_xlabel('$\\rm k_x~(\\AA^{-1}$)')
         ax.set_ylabel('$\\rm E - E_F~(eV)$')
         return fig,ax
